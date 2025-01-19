@@ -827,6 +827,9 @@ static void report_dead_code(struct ppcg_scop *ps,
  * To ensure that the procedure terminates, we compute the affine
  * hull of the live iterations (bounded to the original iteration
  * domains) each time we have added extra iterations.
+ * This affine hull is only computed in spaces that already had
+ * live iterations before adding the latest extra iterations.
+ * The extra iterations outside these spaces are added directly.
  */
 static void eliminate_dead_code(struct ppcg_scop *ps)
 {
@@ -844,7 +847,7 @@ static void eliminate_dead_code(struct ppcg_scop *ps)
 	dep = isl_union_map_reverse(dep);
 
 	for (;;) {
-		isl_union_set *extra;
+		isl_union_set *extra, *universe, *same_space, *other_space;
 
 		extra = isl_union_set_apply(isl_union_set_copy(live),
 					    isl_union_map_copy(dep));
@@ -853,10 +856,16 @@ static void eliminate_dead_code(struct ppcg_scop *ps)
 			break;
 		}
 
-		live = isl_union_set_union(live, extra);
+		universe = isl_union_set_universe(isl_union_set_copy(live));
+		same_space = isl_union_set_intersect(isl_union_set_copy(extra),
+						isl_union_set_copy(universe));
+		other_space = isl_union_set_subtract(extra, universe);
+
+		live = isl_union_set_union(live, same_space);
 		live = isl_union_set_affine_hull(live);
 		live = isl_union_set_intersect(live,
 					    isl_union_set_copy(ps->domain));
+		live = isl_union_set_union(live, other_space);
 	}
 
 	isl_union_map_free(dep);
