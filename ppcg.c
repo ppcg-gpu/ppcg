@@ -807,6 +807,31 @@ static void report_dead_code(struct ppcg_scop *ps,
 	isl_union_set_free(dead);
 }
 
+/* Determine constraints of "old" that are still valid for "extended",
+ * where "old" is assumed to be a subset of "extended".
+ *
+ * First select constraints that appear in the description of "old" and
+ * that are valid for all elements in the corresponding spaces.
+ * Then compute the gist of these constraints with respect to "extended".
+ * This can only remove constraints that are valid for "extended",
+ * so the result consists of constraints that may not be valid for "extended".
+ * Computing the gist of the original constraints with these possibly
+ * invalid constraints returns constraints that are definitely valid.
+ * Note that even though the gist operation is a heuristic operation,
+ * the bad constraints are guaranteed to be removed by the second gist
+ * because they appear directly in the input.
+ */
+static __isl_give isl_union_set *shared_constraints(
+	__isl_take isl_union_set *old, __isl_take isl_union_set *extended)
+{
+	isl_union_set *hull, *gist, *valid;
+
+	hull = isl_union_set_plain_unshifted_simple_hull(old);
+	gist = isl_union_set_copy(hull);
+	gist = isl_union_set_gist(gist, extended);
+	return isl_union_set_gist(hull, gist);
+}
+
 /* Eliminate dead code from ps->domain.
  *
  * In particular, intersect both ps->domain and the domain of
@@ -825,11 +850,15 @@ static void report_dead_code(struct ppcg_scop *ps,
  * something needed by the "live" statements iterations.
  * We keep doing this until no more statement iterations can be added.
  * To ensure that the procedure terminates, we compute the affine
- * hull of the live iterations (bounded to the original iteration
- * domains) each time we have added extra iterations.
+ * hull of the live iterations each time we have added extra iterations.
  * This affine hull is only computed in spaces that already had
  * live iterations before adding the latest extra iterations.
  * The extra iterations outside these spaces are added directly.
+ * To avoid losing too much information by computing the affine hull,
+ * the result is bounded by some constraints that are known to still be valid.
+ * These are the constraints of the original iteration domains,
+ * as well as constraints that were valid before the extra iterations
+ * were added and that are not invalidated by those extra iterations.
  */
 static void eliminate_dead_code(struct ppcg_scop *ps)
 {
@@ -848,6 +877,7 @@ static void eliminate_dead_code(struct ppcg_scop *ps)
 
 	for (;;) {
 		isl_union_set *extra, *universe, *same_space, *other_space;
+		isl_union_set *prev, *valid;
 
 		extra = isl_union_set_apply(isl_union_set_copy(live),
 					    isl_union_map_copy(dep));
@@ -861,8 +891,12 @@ static void eliminate_dead_code(struct ppcg_scop *ps)
 						isl_union_set_copy(universe));
 		other_space = isl_union_set_subtract(extra, universe);
 
+		prev = isl_union_set_copy(live);
 		live = isl_union_set_union(live, same_space);
+		valid = shared_constraints(prev, isl_union_set_copy(live));
+
 		live = isl_union_set_affine_hull(live);
+		live = isl_union_set_intersect(live, valid);
 		live = isl_union_set_intersect(live,
 					    isl_union_set_copy(ps->domain));
 		live = isl_union_set_union(live, other_space);
