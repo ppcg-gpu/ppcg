@@ -16,8 +16,8 @@ RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.
 # Install required tools.
 RUN apt-get -qq update && \
     apt-get -qq --no-install-recommends install vim git ca-certificates \
-    automake autoconf libtool pkg-config libgmp3-dev libyaml-dev \
-    make opencl-c-headers ocl-icd-opencl-dev clinfo libpocl-dev pocl-opencl-icd clinfo \
+    automake autoconf libtool make cmake pkg-config libgmp3-dev libyaml-dev \
+    opencl-c-headers ocl-icd-opencl-dev clinfo libpocl-dev pocl-opencl-icd clinfo \
     clang-20 libclang-20-dev llvm-20-dev && \
     rm -rf /var/lib/apt/lists/*
 
@@ -29,10 +29,10 @@ COPY . /ppcg
 
 WORKDIR /ppcg
 
-RUN ./get_submodules.sh && \
-    ./autogen.sh && \
-    ./configure && \
-    make -j8 && \
-    make check && \
-    make install
+RUN mkdir build && \
+    cd build && \
+    cmake -DCMAKE_INSTALL_PREFIX=/opt/ppcg .. && \
+    cmake --build . -- -j8 && \
+    ctest && \
+    cmake --install .
 

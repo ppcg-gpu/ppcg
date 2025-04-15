@@ -1,6 +1,6 @@
 [submodule "isl"]
-	path = isl
+	path = ThirdParty/isl
 	url = https://github.com/ppcg-gpu/isl.git
 [submodule "pet"]
-	path = pet
+	path = ThirdParty/pet
 	url = https://github.com/ppcg-gpu/pet.git
