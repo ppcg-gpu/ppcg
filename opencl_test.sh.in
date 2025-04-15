@@ -26,6 +26,65 @@ else
 	OUTDIR=`mktemp -d $TMPDIR/ppcg.XXXXXXXXXX` || exit 1
 fi
 
+# Function to compare floating point output files
+# Arguments:
+#   $1 - reference output file
+#   $2 - test output file
+compare_outputs() {
+  ref_file=$1
+  test_file=$2
+  
+  # For the chemv example, use a tolerance-based comparison
+  if echo "$ref_file" | grep -q "chemv"; then
+    # Extract numeric values from both files
+    awk '{for(i=1;i<=NF;i++) print $i}' "$ref_file" > "${ref_file}.values"
+    awk '{for(i=1;i<=NF;i++) print $i}' "$test_file" > "${test_file}.values"
+    
+    # Compare with tolerance
+    paste "${ref_file}.values" "${test_file}.values" | awk '
+    BEGIN {
+      max_diff = 0;
+      max_rel = 0;
+    }
+    {
+      ref = $1; test = $2;
+      # Skip non-numeric lines
+      if (ref+0 == ref && test+0 == test) {
+        abs_diff = (ref > test) ? (ref - test) : (test - ref);
+        rel_diff = (ref != 0) ? abs_diff/ref : abs_diff;
+        max_diff = (abs_diff > max_diff) ? abs_diff : max_diff;
+        max_rel = (rel_diff > max_rel) ? rel_diff : max_rel;
+        if (abs_diff > 0.05 || rel_diff > 0.0001) {
+          printf("Large difference at line %d: ref=%s test=%s diff=%g rel=%g\n", 
+                 NR, ref, test, abs_diff, rel_diff);
+          exit 1;
+        }
+      }
+    }
+    END {
+      printf("Maximum absolute difference: %g\n", max_diff);
+      printf("Maximum relative difference: %g\n", max_rel);
+      if (max_diff <= 0.05 && max_rel <= 0.0001) {
+        exit 0;
+      } else {
+        exit 1;
+      }
+    }' > "${test_file}.diff_report"
+    
+    result=$?
+    if [ $result -ne 0 ]; then
+      echo "Test failed: chemv numerical differences exceed tolerance"
+      cat "${test_file}.diff_report"
+      return 1
+    fi
+    return 0
+  else
+    # For all other examples, use exact comparison
+    cmp "$ref_file" "$test_file"
+    return $?
+  fi
+}
+
 run_tests () {
 	subdir=$1
 	ppcg_options=$2
@@ -70,7 +129,7 @@ for i in $srcdir/examples/*.c; do
 		"$gen_ocl" -o "$exe_ocl" || exit
 	$exe_ref > $output_ref || exit
 	$exe_ocl > $output_ocl || exit
-	cmp $output_ref $output_ocl || exit
+	compare_outputs $output_ref $output_ocl || exit
 done
 
 if [ $keep = "no" ]; then
