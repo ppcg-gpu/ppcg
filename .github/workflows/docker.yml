@@ -1,0 +1,85 @@
+name: Docker image
+
+# The README points at the Dockerfile as the reproducible build, so it has to
+# keep working even though the CI workflow builds the same source directly on
+# the runner.  Building it repeats the entire configure, build, test and
+# install inside a container, so it runs only when something it consumes
+# changes, and once a week regardless, to catch drift in the base image and
+# in the packages it installs from apt.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'ThirdParty/**'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'ThirdParty/**'
+      - '.github/workflows/docker.yml'
+  schedule:
+    - cron: '47 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      llvm-version:
+        description: LLVM major version to build the image against
+        required: false
+        default: '20'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: docker build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      LLVM_VERSION: ${{ inputs.llvm-version || '20' }}
+    steps:
+      - name: Check out ppcg and its submodules
+        uses: actions/checkout@v4
+        with:
+          # The Dockerfile copies the working tree into the image, so the
+          # submodules have to be present in it, and "git describe" has to
+          # have something to describe.
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build the image
+        # The Dockerfile itself runs cmake, ctest and cmake --install, so a
+        # successful build is the whole assertion.  The default bridge
+        # network is used; --network=host is not permitted in this project.
+        run: |
+          set -euo pipefail
+          docker build \
+              --build-arg "LLVM_VERSION=${LLVM_VERSION}" \
+              --tag "ppcg:ci-llvm${LLVM_VERSION}" \
+              . 2>&1 | tee docker-build.log
+
+      - name: Check that the image can run the ppcg it installed
+        run: |
+          set -euo pipefail
+          docker run --rm "ppcg:ci-llvm${LLVM_VERSION}" \
+              /opt/ppcg/bin/ppcg --version
+
+      - name: Collect the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-docker-llvm${{ env.LLVM_VERSION }}
+          if-no-files-found: warn
+          path: docker-build.log

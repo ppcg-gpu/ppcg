@@ -1,0 +1,96 @@
+name: Set up an LLVM/clang toolchain
+description: >-
+  Install one LLVM/clang release from apt.llvm.org together with the rest of
+  the packages ppcg needs, make it the default toolchain, and report the exact
+  version it turned out to be.
+
+inputs:
+  llvm-version:
+    description: >-
+      LLVM major version to install.  apt.llvm.org publishes
+      llvm-toolchain-jammy-13 through -22; 11 and 12 were never built for
+      jammy, so they cannot be tested on this runner image.
+    required: true
+  opencl:
+    description: >-
+      Also install the pocl OpenCL runtime, which is what makes the OpenCL
+      test group appear while configuring.
+    required: false
+    default: 'false'
+
+outputs:
+  version:
+    description: >-
+      The full version llvm-config reports, e.g. 20.1.8.  The build has to be
+      pinned with this rather than with the major version: FindLLVMClang
+      compares the requested version against LLVM_PACKAGE_VERSION with
+      VERSION_EQUAL, and "20.1.8" does not compare equal to "20".
+    value: ${{ steps.pin.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Add the apt.llvm.org repository
+      shell: bash
+      env:
+        LLVM_VERSION: ${{ inputs.llvm-version }}
+      run: |
+        set -euxo pipefail
+        sudo apt-get -qq update
+        sudo apt-get -qq --no-install-recommends install \
+            ca-certificates gpg wget
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+        echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_VERSION} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+
+    - name: Install the build dependencies
+      shell: bash
+      env:
+        LLVM_VERSION: ${{ inputs.llvm-version }}
+        WANT_OPENCL: ${{ inputs.opencl }}
+      run: |
+        set -euxo pipefail
+        sudo apt-get -qq update
+        # The Dockerfile's package list, minus the packages that only exist
+        # to make the container comfortable to sit in (vim), plus ccache.
+        sudo apt-get -qq --no-install-recommends install \
+            git make cmake ninja-build ccache pkg-config python3 \
+            libyaml-dev libgmp-dev \
+            "clang-${LLVM_VERSION}" \
+            "libclang-${LLVM_VERSION}-dev" \
+            "libclang-cpp${LLVM_VERSION}-dev" \
+            "llvm-${LLVM_VERSION}-dev"
+        if [ "$WANT_OPENCL" = "true" ]; then
+            sudo apt-get -qq --no-install-recommends install \
+                opencl-c-headers ocl-icd-opencl-dev clinfo \
+                libpocl-dev pocl-opencl-icd
+        fi
+
+    - name: Make the requested toolchain the default one
+      id: pin
+      shell: bash
+      env:
+        LLVM_VERSION: ${{ inputs.llvm-version }}
+      run: |
+        set -euxo pipefail
+        # The runner image ships its own clang, so these are replaced rather
+        # than created.  This is what the Dockerfile does, and it is what
+        # FindLLVMClang falls back on when nothing is pinned.
+        sudo ln -sf "/usr/bin/llvm-config-${LLVM_VERSION}" /usr/bin/llvm-config
+        sudo ln -sf "/usr/bin/clang-${LLVM_VERSION}" /usr/bin/clang
+        sudo ln -sf "/usr/bin/clang++-${LLVM_VERSION}" /usr/bin/clang++
+        full=$(llvm-config --version)
+        # Which LLVM the build picks up is the entire point of the matrix, so
+        # a mismatch has to stop the job rather than quietly re-test the
+        # version the image happened to come with.
+        if [ "${full%%.*}" != "${LLVM_VERSION}" ]; then
+            echo "expected LLVM ${LLVM_VERSION}, llvm-config reports ${full}" >&2
+            exit 1
+        fi
+        echo "version=${full}" >> "$GITHUB_OUTPUT"
+
+    - name: Report the OpenCL platforms
+      if: inputs.opencl == 'true'
+      shell: bash
+      run: clinfo --list

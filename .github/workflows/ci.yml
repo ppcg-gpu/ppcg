@@ -1,0 +1,371 @@
+name: CI
+
+# ppcg is a stack of six repositories that all have to be checked out together
+# and all have to compile against whichever LLVM the user happens to have.
+# The jobs below are the three questions worth asking on every change:
+#
+#   build       does ppcg build, do its 1863 tests pass, and is the result
+#               installable and usable afterwards - on more than one LLVM
+#   standalone  does each of the five bundled projects still build and test on
+#               its own, the way somebody who cloned only that repository
+#               would build it
+#   opencl      does the OpenCL test group pass when a runtime is present
+#
+# The Dockerfile is checked by a separate workflow, because it repeats the
+# whole build inside a container and only needs to run when something it
+# consumes changes.
+
+on:
+  push:
+    # Feature branches are already covered by the pull request trigger, and
+    # running this matrix on every push to every branch would cost hours of
+    # runner time without answering a new question.
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # Weekly sweep over every LLVM apt.llvm.org publishes for jammy.  The
+    # clang compatibility layer is decided by 59 compile probes and contains
+    # no version numbers at all, so the only way to know that a version still
+    # works is to build against it.
+    - cron: '17 4 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  llvm-matrix:
+    name: Choose the LLVM versions
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      versions: ${{ steps.select.outputs.versions }}
+    steps:
+      - name: Select the matrix for this event
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          # apt.llvm.org carries llvm-toolchain-jammy-13 through -22.  There
+          # is no -11 and no -12 for jammy, so the "LLVM 11 through 22" the
+          # project claims cannot be tested below 13 on this runner image.
+          #
+          # Per change we build the ends and the transition:
+          #   13  the oldest clang API the compatibility layer can still see
+          #   20  what the Dockerfile pins and the README is written around
+          #   21  the last version with the old API shape
+          #   22  setInvocation gone, ElaboratedType gone, createSourceManager
+          #       without an argument, TextDiagnosticPrinter by reference
+          # Everything in between is covered by the weekly sweep.
+          case "$EVENT_NAME" in
+            schedule|workflow_dispatch)
+              versions='[13, 14, 15, 16, 17, 18, 19, 20, 21, 22]' ;;
+            *)
+              versions='[13, 20, 21, 22]' ;;
+          esac
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          echo "Building against LLVM $versions"
+
+  build:
+    name: ppcg on LLVM ${{ matrix.llvm }}
+    needs: llvm-matrix
+    runs-on: ubuntu-22.04
+    # Configuring alone is minutes: clang_feature_tests runs 59 sequential
+    # try_compile probes against the clang headers, which takes 215 s on an
+    # 88 core workstation and considerably longer here.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm: ${{ fromJSON(needs.llvm-matrix.outputs.versions) }}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - name: Check out ppcg and its submodules
+        uses: actions/checkout@v4
+        with:
+          # All six repositories.  The full history as well: the version ppcg
+          # reports comes from "git describe", which has nothing to describe
+          # in a shallow clone.
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up LLVM ${{ matrix.llvm }}
+        id: llvm
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ matrix.llvm }}
+
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-build-llvm${{ matrix.llvm }}-${{ github.sha }}
+          restore-keys: |
+            ccache-build-llvm${{ matrix.llvm }}-
+
+      - name: Configure
+        env:
+          # The full version, not the major one: FindLLVMClang compares the
+          # requested version against LLVM_PACKAGE_VERSION with VERSION_EQUAL,
+          # and 20.1.8 is not equal to 20.  Pinning it here is what turns
+          # "some LLVM was found" into "the LLVM this job is named after".
+          LLVM_FULL: ${{ steps.llvm.outputs.version }}
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/prefix" \
+              -DPET_FORCE_LLVM_VERSION="${LLVM_FULL}" \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              2>&1 | tee configure.log
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          # A configuration that quietly failed to register the pet corpus
+          # would otherwise report a green "0 tests failed".  Without an
+          # OpenCL runtime the suite is exactly 1863 tests.
+          registered=$(ctest --test-dir build -N | sed -n 's/^Total Tests: //p')
+          echo "registered tests: ${registered}"
+          if [ "${registered}" -lt 1863 ]; then
+              echo "expected at least 1863 tests, got ${registered}" >&2
+              exit 1
+          fi
+          ctest --test-dir build -j"$(nproc)" --output-on-failure
+
+      - name: Install
+        run: cmake --install build
+
+      - name: Check that the installed prefix is usable
+        run: ./.github/scripts/smoke-install.sh "${{ github.workspace }}/prefix"
+
+      - name: Report the ccache statistics
+        if: always()
+        run: ccache --show-stats
+
+      - name: Collect the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-build-llvm${{ matrix.llvm }}
+          if-no-files-found: warn
+          path: |
+            configure.log
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/Testing/Temporary/LastTest.log
+            build/Testing/Temporary/LastTestsFailed.log
+
+  standalone:
+    name: ${{ matrix.name }} standalone
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A standalone build is not the same build.  PROJECT_IS_TOP_LEVEL
+          # gates the install rules, the "check" target and the developer
+          # targets, so none of that is configured, compiled or run when ppcg
+          # pulls these in with add_subdirectory.  The test counts below are
+          # the numbers these projects produce on their own; isl registers 59
+          # standalone against the 55 it contributes to the ppcg build.
+          - name: imath
+            path: ThirdParty/pet/ThirdParty/isl/ThirdParty/imath
+            # imath is the one project here that never touches LLVM.
+            llvm_option: ''
+            min_tests: 39
+          - name: clang_feature_tests
+            path: ThirdParty/pet/ThirdParty/isl/ThirdParty/extract_interface/ThirdParty/clang_feature_tests
+            llvm_option: LLVM_VERSION
+            # It only probes the clang API and generates a header, so
+            # configuring and building it is the whole assertion.
+            min_tests: 0
+          - name: extract_interface
+            path: ThirdParty/pet/ThirdParty/isl/ThirdParty/extract_interface
+            llvm_option: EXTRACT_INTERFACE_FORCE_LLVM_VERSION
+            min_tests: 0
+          - name: isl
+            path: ThirdParty/pet/ThirdParty/isl
+            llvm_option: LLVM_VERSION
+            min_tests: 59
+          - name: pet
+            path: ThirdParty/pet
+            llvm_option: PET_FORCE_LLVM_VERSION
+            min_tests: 1838
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - name: Check out ppcg and its submodules
+        # One recursive checkout already contains all five of them, so this
+        # does not need five checkouts of five repositories.
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up LLVM 20
+        id: llvm
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: '20'
+
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-standalone-${{ matrix.name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-standalone-${{ matrix.name }}-
+
+      - name: Configure
+        env:
+          SRC: ${{ matrix.path }}
+          # Each project spells the knob its own way, and passing each one its
+          # own spelling is what keeps those spellings working.
+          LLVM_OPTION: ${{ matrix.llvm_option }}
+          LLVM_FULL: ${{ steps.llvm.outputs.version }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${LLVM_OPTION}" ]; then
+              args+=("-D${LLVM_OPTION}=${LLVM_FULL}")
+          fi
+          cmake -S "${SRC}" -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/prefix" \
+              "${args[@]}" \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              2>&1 | tee configure.log
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        env:
+          MIN_TESTS: ${{ matrix.min_tests }}
+        run: |
+          set -euo pipefail
+          registered=$(ctest --test-dir build -N | sed -n 's/^Total Tests: //p')
+          echo "registered tests: ${registered} (expected at least ${MIN_TESTS})"
+          if [ "${registered}" -lt "${MIN_TESTS}" ]; then
+              echo "expected at least ${MIN_TESTS} tests, got ${registered}" >&2
+              exit 1
+          fi
+          # extract_interface and clang_feature_tests register no tests at
+          # all, which is a fact about them and not a failure.
+          ctest --test-dir build -j"$(nproc)" --output-on-failure --no-tests=ignore
+
+      - name: Install
+        run: cmake --install build
+
+      - name: Show what was installed
+        run: find "${{ github.workspace }}/prefix" -type f | sort
+
+      - name: Collect the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-standalone-${{ matrix.name }}
+          if-no-files-found: warn
+          path: |
+            configure.log
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/Testing/Temporary/LastTest.log
+            build/Testing/Temporary/LastTestsFailed.log
+
+  opencl:
+    name: OpenCL target
+    # The OpenCL group adds roughly 47 tests that compile and run generated
+    # kernels through pocl.  It depends on a runtime rather than on ppcg, so
+    # it is kept out of the matrix above and off pull requests: a pocl
+    # regression should not turn four LLVM jobs red or block a merge.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - name: Check out ppcg and its submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up LLVM 20 with pocl
+        id: llvm
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: '20'
+          opencl: 'true'
+
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-opencl-${{ github.sha }}
+          restore-keys: |
+            ccache-opencl-
+
+      - name: Configure
+        env:
+          LLVM_FULL: ${{ steps.llvm.outputs.version }}
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DPET_FORCE_LLVM_VERSION="${LLVM_FULL}" \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              2>&1 | tee configure.log
+          # Silence about OpenCL here would mean the extra tests were never
+          # configured and this job proved nothing.
+          if grep -q "OpenCL not found" configure.log; then
+              echo "OpenCL was not found, so the OpenCL tests were skipped" >&2
+              exit 1
+          fi
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          # 1863 without a runtime, so anything at or below that means the
+          # OpenCL group did not appear.
+          registered=$(ctest --test-dir build -N | sed -n 's/^Total Tests: //p')
+          echo "registered tests: ${registered}"
+          if [ "${registered}" -le 1863 ]; then
+              echo "expected more than 1863 tests with OpenCL, got ${registered}" >&2
+              exit 1
+          fi
+          ctest --test-dir build -j"$(nproc)" --output-on-failure
+
+      - name: Collect the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-opencl
+          if-no-files-found: warn
+          path: |
+            configure.log
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/Testing/Temporary/LastTest.log
+            build/Testing/Temporary/LastTestsFailed.log
