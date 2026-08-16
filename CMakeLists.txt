@@ -24,8 +24,10 @@ include(CTest)
 
 # Checked here rather than next to the tests that use it: configuring the
 # subprojects takes minutes, and a mistyped path should be reported now.
+# Only when the tests it feeds are going to be registered at all.
 set(POLYBENCH_DIR "" CACHE PATH "Path to Polybench directory")
-if(POLYBENCH_DIR AND NOT EXISTS "${POLYBENCH_DIR}/utilities/benchmark_list")
+if(BUILD_TESTING AND POLYBENCH_DIR AND
+        NOT EXISTS "${POLYBENCH_DIR}/utilities/benchmark_list")
     message(FATAL_ERROR
         "POLYBENCH_DIR is set to ${POLYBENCH_DIR}, but it does not contain "
         "utilities/benchmark_list")
