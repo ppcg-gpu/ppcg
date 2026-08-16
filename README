@@ -1,50 +1,64 @@
 Requirements:
 
-- automake, autoconf, libtool
-	(not needed when compiling a release)
-- pkg-config (http://www.freedesktop.org/wiki/Software/pkg-config)
-	(not needed when compiling a release using the included isl and pet)
-- gmp (http://gmplib.org/)
+- cmake, 3.19 or higher (https://cmake.org/)
+- a C compiler and a C++ compiler
+- python3
+	(used to generate isl sources and to compare test outputs)
 - libyaml (http://pyyaml.org/wiki/LibYAML)
-	(only needed if you want to compile the pet executable)
-- LLVM/clang libraries, 2.9 or higher (http://clang.llvm.org/get_started.html)
+- LLVM/clang libraries (http://clang.llvm.org/get_started.html)
 	Unless you have some other reasons for wanting to use the svn version,
 	it is best to install the latest supported release.
 	For more details, including the latest supported release,
-	see pet/README.
+	see ThirdParty/pet/README.md.
+
+The bundled isl is built against the bundled imath, so no separate gmp
+installation is needed.
 
 If you are installing on Ubuntu, then you can install the following packages:
 
-automake autoconf libtool pkg-config libgmp3-dev libyaml-dev libclang-dev llvm
-
-Note that you need at least version 3.2 of libclang-dev (ubuntu raring).
-Older versions of this package did not include the required libraries.
-If you are using an older version of ubuntu, then you need to compile and
-install LLVM/clang from source.
+cmake python3 libyaml-dev libclang-dev llvm-dev
 
 
 Preparing:
 
 Grab the latest release and extract it or get the source from
-the git repository as follows.  This process requires autoconf,
-automake, libtool and pkg-config.
+the git repository as follows.  isl and pet are git submodules,
+so the clone has to be recursive.
 
-	git clone git://repo.or.cz/ppcg.git
+	git clone --recursive git://repo.or.cz/ppcg.git
 	cd ppcg
-	./get_submodules.sh
-	./autogen.sh
+
+If you already have a non-recursive clone, then run
+
+	git submodule update --init --recursive
 
 
 Compilation:
 
-	./configure
-	make
-	make check
+	cmake -S . -B build
+	cmake --build build
+	ctest --test-dir build
+	cmake --install build
 
-If you have installed any of the required libraries in a non-standard
-location, then you may need to use the --with-gmp-prefix,
---with-libyaml-prefix and/or --with-clang-prefix options
-when calling "./configure".
+Options for the configuration step:
+
+	-DCMAKE_INSTALL_PREFIX=<dir>
+		where "cmake --install" puts ppcg (default: /usr/local)
+	-DCMAKE_BUILD_TYPE=<type>
+		Debug, Release, RelWithDebInfo or MinSizeRel.
+		Defaults to RelWithDebInfo, i.e. optimised with
+		debug information.
+	-DPET_FORCE_LLVM_VERSION=<n>
+		build pet against a particular LLVM version, for machines
+		that have more than one installed
+	-DPOLYBENCH_DIR=<dir>
+		path to a PolyBench/C source tree
+
+"ctest" always runs the isl and pet test suites and translates every
+program in tests/ and examples/ with --target=c.  The OpenCL tests are
+only configured when an OpenCL implementation is found and the PolyBench
+tests only when POLYBENCH_DIR is given; otherwise those groups are left
+out and cmake says so while configuring.
 
 
 Using PPCG to generate CUDA or OpenCL code
