@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.21)
 
 project(ppcg VERSION 0.09.2 LANGUAGES C CXX)
 
@@ -81,7 +81,11 @@ find_package(OpenCL)
 find_package(OpenMP)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-enable_testing()
+# BUILD_TESTING comes from CTest and has to actually switch the tests off,
+# so everything below is registered only when it is on.
+include(CTest)
+
+if(BUILD_TESTING)
 
 set(RUN_AND_COMPARE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunAndCompare.cmake)
 set(COMPARE_OUTPUTS ${CMAKE_CURRENT_SOURCE_DIR}/compare_outputs.py)
@@ -390,4 +394,6 @@ elseif(POLYBENCH_DIR)
         "POLYBENCH_DIR is set to ${POLYBENCH_DIR}, but it does not contain utilities/benchmark_list")
 else()
     message(STATUS "POLYBENCH_DIR is not set. Polybench tests will be skipped.")
+endif()
+
 endif()
