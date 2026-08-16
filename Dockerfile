@@ -16,9 +16,10 @@ RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.
 # Install required tools.
 RUN apt-get -qq update && \
     apt-get -qq --no-install-recommends install vim git ca-certificates \
-    make cmake ninja-build pkg-config python3 libyaml-dev \
+    make cmake ninja-build pkg-config python3 libyaml-dev libgmp-dev \
     opencl-c-headers ocl-icd-opencl-dev clinfo libpocl-dev pocl-opencl-icd \
-    clang-${LLVM_VERSION} libclang-${LLVM_VERSION}-dev llvm-${LLVM_VERSION}-dev && \
+    clang-${LLVM_VERSION} libclang-${LLVM_VERSION}-dev \
+    libclang-cpp${LLVM_VERSION}-dev llvm-${LLVM_VERSION}-dev && \
     rm -rf /var/lib/apt/lists/*
 
 RUN ln -s /usr/bin/llvm-config-${LLVM_VERSION} /usr/bin/llvm-config && \
@@ -32,6 +33,6 @@ WORKDIR /ppcg
 RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/ppcg && \
     cmake --build build && \
-    ctest --test-dir build --output-on-failure && \
+    ctest --test-dir build -j$(nproc) --output-on-failure && \
     cmake --install build
 

@@ -22,8 +22,13 @@ def compare_with_tolerance(ref_file, test_file, is_chemv):
             ref_values = extract_numeric_values(ref_file)
             test_values = extract_numeric_values(test_file)
 
+            # A candidate that produced fewer values than the reference,
+            # in the extreme none at all, is a failure and not a warning:
+            # comparing the common prefix would otherwise pass it.
             if len(ref_values) != len(test_values):
-                print(f"Warning: Different number of values: ref={len(ref_values)}, test={len(test_values)}")
+                print(f"Different number of values: ref={len(ref_values)}, "
+                      f"test={len(test_values)}")
+                return 1
 
             max_diff = 0.0
             max_rel = 0.0

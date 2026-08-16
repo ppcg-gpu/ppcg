@@ -18,6 +18,19 @@ endif()
 
 include(GNUInstallDirs)
 
+# Establish BUILD_TESTING before the subprojects, so that turning testing
+# off reaches all of them.
+include(CTest)
+
+# Checked here rather than next to the tests that use it: configuring the
+# subprojects takes minutes, and a mistyped path should be reported now.
+set(POLYBENCH_DIR "" CACHE PATH "Path to Polybench directory")
+if(POLYBENCH_DIR AND NOT EXISTS "${POLYBENCH_DIR}/utilities/benchmark_list")
+    message(FATAL_ERROR
+        "POLYBENCH_DIR is set to ${POLYBENCH_DIR}, but it does not contain "
+        "utilities/benchmark_list")
+endif()
+
 # Keep the installed program pointing at the libraries in the same prefix
 # instead of whatever isl the system happens to provide.
 set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
@@ -73,6 +86,11 @@ target_link_libraries(ppcg PRIVATE pet isl)
 
 install(TARGETS ppcg RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# The generated OpenCL host code calls into ocl_utilities.c, which the user
+# has to compile alongside it, so it has to be available after installing.
+install(FILES ocl_utilities.c ocl_utilities.h
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/ppcg)
+
 #--------------------------------------------------------------------
 # Tests
 #--------------------------------------------------------------------
@@ -81,10 +99,7 @@ find_package(OpenCL)
 find_package(OpenMP)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-# BUILD_TESTING comes from CTest and has to actually switch the tests off,
-# so everything below is registered only when it is on.
-include(CTest)
-
+# Everything below is registered only when testing is on.
 if(BUILD_TESTING)
 
 set(RUN_AND_COMPARE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunAndCompare.cmake)
@@ -189,6 +204,10 @@ foreach(example_file ${EXAMPLE_FILES})
         add_c_example_test(openmp ${example_file} "--target=c;--openmp")
     endif()
 endforeach()
+
+if(NOT OpenMP_C_FOUND)
+    message(STATUS "OpenMP not found. OpenMP tests will be skipped.")
+endif()
 
 # Translate a regression test to plain C, build it and check that it runs.
 # This is the assertion the autotools opencl_test.sh made about the same
@@ -311,8 +330,6 @@ endif()
 # Polybench tests
 #--------------------------------------------------------------------
 
-set(POLYBENCH_DIR "" CACHE PATH "Path to Polybench directory")
-
 if(POLYBENCH_DIR AND EXISTS "${POLYBENCH_DIR}/utilities/benchmark_list")
     message(STATUS "Polybench directory found at ${POLYBENCH_DIR}. Polybench tests are enabled.")
 
@@ -389,9 +406,6 @@ if(POLYBENCH_DIR AND EXISTS "${POLYBENCH_DIR}/utilities/benchmark_list")
     if(OpenCL_FOUND)
         add_polybench_test(opencl "--target=opencl;--opencl-no-use-gpu")
     endif()
-elseif(POLYBENCH_DIR)
-    message(FATAL_ERROR
-        "POLYBENCH_DIR is set to ${POLYBENCH_DIR}, but it does not contain utilities/benchmark_list")
 else()
     message(STATUS "POLYBENCH_DIR is not set. Polybench tests will be skipped.")
 endif()

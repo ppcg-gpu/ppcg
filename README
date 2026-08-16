@@ -1,6 +1,6 @@
 Requirements:
 
-- cmake, 3.19 or higher (https://cmake.org/)
+- cmake, 3.21 or higher (https://cmake.org/)
 - a C compiler and a C++ compiler
 - python3
 	(used to generate isl sources and to compare test outputs)
@@ -11,12 +11,15 @@ Requirements:
 	For more details, including the latest supported release,
 	see ThirdParty/pet/README.md.
 
-The bundled isl is built against the bundled imath, so no separate gmp
-installation is needed.
+The bundled isl is built against the bundled imath, so gmp is not needed
+to build ppcg.  It is only used by the tests that compare imath against
+gmp; without it those are skipped and everything else still runs.
 
 If you are installing on Ubuntu, then you can install the following packages:
 
 cmake python3 libyaml-dev libclang-dev llvm-dev
+
+and, to also run the imath compatibility tests, libgmp-dev.
 
 
 Preparing:
@@ -25,7 +28,7 @@ Grab the latest release and extract it or get the source from
 the git repository as follows.  isl and pet are git submodules,
 so the clone has to be recursive.
 
-	git clone --recursive git://repo.or.cz/ppcg.git
+	git clone --recursive https://github.com/ppcg-gpu/ppcg.git
 	cd ppcg
 
 If you already have a non-recursive clone, then run
@@ -44,6 +47,11 @@ Options for the configuration step:
 
 	-DCMAKE_INSTALL_PREFIX=<dir>
 		where "cmake --install" puts ppcg (default: /usr/local)
+
+Note that the installed ppcg and libpet link against the LLVM and clang
+shared libraries, and the generated code is parsed with the clang headers
+found at run time, so the same LLVM installation has to be present on the
+machine ppcg runs on.
 	-DCMAKE_BUILD_TYPE=<type>
 		Debug, Release, RelWithDebInfo or MinSizeRel.
 		Defaults to RelWithDebInfo, i.e. optimised with
@@ -146,7 +154,13 @@ Compiling the generated OpenCL code with gcc
 
 To compile the host code you need to link against the file
 ocl_utilities.c which contains utility functions used by the generated
-OpenCL host code.  To compile the host code with gcc, run
+OpenCL host code.  It is installed along with its header, so with
+<prefix> the directory ppcg was installed into, run
+
+  gcc -std=c99 -I<prefix>/share/ppcg file_host.c \
+      <prefix>/share/ppcg/ocl_utilities.c -lOpenCL
+
+or, from the source tree,
 
   gcc -std=c99 file_host.c ocl_utilities.c -lOpenCL
 
