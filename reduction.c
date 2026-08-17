@@ -45,49 +45,105 @@ static int op_is_associative(enum pet_op_type op)
 	}
 }
 
-/* The array "expr" accesses, or NULL when it accesses no array.
+/* The space of what "index" reaches, or NULL when it reaches no array.
  *
  * pet writes a value that is an integer, such as the value of a loop
- * iterator, as an access to a space with no name, so asking such an
- * access which array it belongs to is an error rather than a question
- * with an empty answer.
+ * iterator, as an access to a space with no name, so such an access
+ * belongs to no array rather than to one whose name is empty.
  */
-static __isl_give isl_id *access_array_id(__isl_keep pet_expr *expr)
+static __isl_give isl_space *index_array_space(
+	__isl_keep isl_multi_pw_aff *index)
+{
+	isl_space *space;
+
+	if (!index)
+		return NULL;
+
+	space = isl_space_range(isl_multi_pw_aff_get_space(index));
+	if (isl_space_has_tuple_id(space, isl_dim_out) != isl_bool_true) {
+		isl_space_free(space);
+		return NULL;
+	}
+
+	return space;
+}
+
+/* The space of the array "expr" accesses, or NULL when it accesses none.
+ */
+static __isl_give isl_space *access_array_space(__isl_keep pet_expr *expr)
 {
 	isl_multi_pw_aff *index;
 	isl_space *space;
-	isl_id *id = NULL;
 
 	index = pet_expr_access_get_index(expr);
-	if (!index)
-		return NULL;
-	space = isl_multi_pw_aff_get_space(index);
-	if (isl_space_has_tuple_id(space, isl_dim_out) == isl_bool_true)
-		id = isl_space_get_tuple_id(space, isl_dim_out);
-	isl_space_free(space);
+	space = index_array_space(index);
 	isl_multi_pw_aff_free(index);
 
-	return id;
+	return space;
 }
 
-/* The array of "scop" that is named "name", or NULL when there is none.
+/* Is "extent" the extent of the array reached by "space"?
+ *
+ * The name is not enough to tell one array from another.  pet gives a
+ * member of a structure an array of its own, named after the structure
+ * and the member together, and a program is free to have a variable of
+ * that name as well: a.v and a_v both give an array called a_v.  What
+ * tells them apart is the shape of the space, since the one made for
+ * the member is a wrapped relation from the structure to the member.
  */
-static struct pet_array *find_array(struct ppcg_scop *scop, const char *name)
+static int extent_matches(__isl_keep isl_set *extent,
+	__isl_keep isl_space *space)
+{
+	isl_space *extent_space;
+	const char *extent_name, *name;
+	int match;
+
+	extent_space = isl_set_get_space(extent);
+	extent_name = isl_space_get_tuple_name(extent_space, isl_dim_set);
+	name = isl_space_get_tuple_name(space, isl_dim_out);
+
+	match = extent_name && name && !strcmp(extent_name, name) &&
+		isl_space_is_wrapping(extent_space) ==
+			isl_space_is_wrapping(space) &&
+		isl_space_dim(extent_space, isl_dim_set) ==
+			isl_space_dim(space, isl_dim_out);
+
+	isl_space_free(extent_space);
+
+	return match;
+}
+
+/* The array of "scop" that "space" reaches, or NULL when there is none.
+ */
+static struct pet_array *find_array(struct ppcg_scop *scop,
+	__isl_keep isl_space *space)
 {
 	int i;
 
-	if (!name)
+	if (!space)
 		return NULL;
 
-	for (i = 0; i < scop->pet->n_array; ++i) {
-		const char *array;
-
-		array = isl_set_get_tuple_name(scop->pet->arrays[i]->extent);
-		if (array && !strcmp(array, name))
+	for (i = 0; i < scop->pet->n_array; ++i)
+		if (extent_matches(scop->pet->arrays[i]->extent, space))
 			return scop->pet->arrays[i];
-	}
 
 	return NULL;
+}
+
+/* The pet_array of the array "red" accumulates into, or NULL when the
+ * scop does not describe it.
+ */
+static struct pet_array *reduction_array(struct ppcg_scop *scop,
+	struct ppcg_reduction *red)
+{
+	struct pet_array *array;
+	isl_space *space;
+
+	space = index_array_space(red->index);
+	array = find_array(scop, space);
+	isl_space_free(space);
+
+	return array;
 }
 
 /* The names of the types whose values these operators may be
@@ -197,7 +253,7 @@ static int type_is_floating(const char *type)
 static int expr_is_integer(struct ppcg_scop *scop, __isl_keep pet_expr *expr)
 {
 	struct pet_array *array;
-	isl_id *id;
+	isl_space *space;
 	int i, n, all = 1;
 
 	switch (pet_expr_get_type(expr)) {
@@ -209,11 +265,11 @@ static int expr_is_integer(struct ppcg_scop *scop, __isl_keep pet_expr *expr)
 	case pet_expr_cast:
 		return type_is_integer(pet_expr_cast_get_type_name(expr));
 	case pet_expr_access:
-		id = access_array_id(expr);
-		if (!id)
+		space = access_array_space(expr);
+		if (!space)
 			return 1;
-		array = find_array(scop, isl_id_get_name(id));
-		isl_id_free(id);
+		array = find_array(scop, space);
+		isl_space_free(space);
 		return array && type_is_integer(array->element_type);
 	default:
 		break;
@@ -299,7 +355,7 @@ static int accumulate_is_associative(struct ppcg_scop *scop,
 {
 	struct pet_array *array;
 
-	array = find_array(scop, ppcg_reduction_name(red));
+	array = reduction_array(scop, red);
 	if (!array)
 		return 0;
 	if (type_is_floating(array->element_type))
@@ -361,8 +417,8 @@ static int extract_reduction(struct ppcg_scop *scop,
  * it is an accumulation and nothing else.
  */
 struct reduction_accesses {
-	/* The array the accumulator belongs to. */
-	isl_id *array;
+	/* The space of the array the accumulator belongs to. */
+	isl_space *array;
 	/* Accesses to that array. */
 	int on_accumulator;
 	/* Accesses that write. */
@@ -372,12 +428,12 @@ struct reduction_accesses {
 static int count_access(__isl_keep pet_expr *expr, void *user)
 {
 	struct reduction_accesses *count = user;
-	isl_id *id;
+	isl_space *space;
 
-	id = access_array_id(expr);
-	if (id && id == count->array)
+	space = access_array_space(expr);
+	if (space && isl_space_has_equal_tuples(space, count->array))
 		count->on_accumulator++;
-	isl_id_free(id);
+	isl_space_free(space);
 
 	if (pet_expr_access_is_write(expr) == isl_bool_true)
 		count->writes++;
@@ -420,11 +476,11 @@ static int only_accumulates(__isl_keep pet_tree *tree,
 	struct reduction_accesses count = { NULL, 0, 0 };
 	int ok;
 
-	count.array = isl_multi_pw_aff_get_tuple_id(red->index, isl_dim_out);
+	count.array = index_array_space(red->index);
 	if (!count.array)
 		return 0;
 	ok = pet_tree_foreach_access_expr(tree, &count_access, &count) >= 0;
-	isl_id_free(count.array);
+	isl_space_free(count.array);
 
 	return ok && count.on_accumulator == 1 && count.writes == 1;
 }
@@ -617,15 +673,6 @@ static char *append(char *s, char *suffix)
 	free(suffix);
 
 	return grown;
-}
-
-/* The pet_array of the array "red" accumulates into, or NULL when the
- * scop does not describe it.
- */
-static struct pet_array *reduction_array(struct ppcg_scop *scop,
-	struct ppcg_reduction *red)
-{
-	return find_array(scop, ppcg_reduction_name(red));
 }
 
 /* Do the bounds of dimension "pos" of "set" have constant values, and if
