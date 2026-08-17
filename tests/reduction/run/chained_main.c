@@ -2,29 +2,25 @@
 
 #define N 1024
 
-void chained(float a[N], float b[N], float *ps, float *pp);
+void chained(int a[N], int b[N], long *ps, long *pt);
 
-/* The factors stay near one so that the product of a thousand of them
- * remains a number that can be printed and compared; the terms are
- * spread out so that a lost or a too early addition shows up.
- *
- * The terms are also kept small, because the sum is multiplied by the
- * product: the last digits the product loses to being accumulated in a
- * different order are worth that much more in the sum.
+/* No term is zero, so an iteration that is dropped or run twice changes
+ * the result whichever one it is.  That matters most at the ends of the
+ * range, where a wrongly divided loop would lose one.
  */
 int main(void)
 {
-	static float a[N], b[N];
-	float sum, prod;
+	static int a[N], b[N];
+	long sum, total;
 	int i;
 
 	for (i = 0; i < N; ++i) {
-		a[i] = (float) ((i * 37) % 101) / 70.0f;
-		b[i] = 1.0f + (float) ((i * 13) % 7 - 3) / 1000.0f;
+		a[i] = 1 + (i * 37) % 101;
+		b[i] = 1 + (i * 13) % 7;
 	}
 
-	chained(a, b, &sum, &prod);
-	printf("%.6f %.6f\n", sum, prod);
+	chained(a, b, &sum, &total);
+	printf("%ld %ld\n", sum, total);
 
 	return 0;
 }

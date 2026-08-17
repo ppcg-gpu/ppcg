@@ -58,6 +58,16 @@ static int same_location(__isl_keep isl_multi_pw_aff *a,
 	return equal == isl_bool_true;
 }
 
+/* Release what "red" holds, leaving it as empty as it started out.
+ */
+static void reduction_clear(struct ppcg_reduction *red)
+{
+	isl_id_free(red->ref);
+	isl_multi_pw_aff_free(red->index);
+	red->ref = NULL;
+	red->index = NULL;
+}
+
 /* Is "expr" a compound assignment that accumulates into the location it
  * reads?  If so, describe it in "red".
  *
@@ -66,6 +76,12 @@ static int same_location(__isl_keep isl_multi_pw_aff *a,
  * is marked as both, so the check is that this argument is an access, that
  * it is read as well as written, and that the operator is one whose order
  * does not matter.
+ *
+ * A member of a structure is refused.  pet gives the field an array of
+ * its own, named after the structure and the field together, and that
+ * name is not one the generated code declares, so it could not be put in
+ * a clause.  Such an access is the one whose index expression has a
+ * wrapped range, the structure on one side and the field on the other.
  */
 static int extract_reduction(__isl_keep pet_expr *expr, int stmt,
 	struct ppcg_reduction *red)
@@ -73,6 +89,7 @@ static int extract_reduction(__isl_keep pet_expr *expr, int stmt,
 	enum pet_op_type op;
 	pet_expr *arg;
 	isl_bool is_read, is_write;
+	isl_space *space;
 	int ok = 0;
 
 	if (pet_expr_get_type(expr) != pet_expr_op)
@@ -99,52 +116,88 @@ static int extract_reduction(__isl_keep pet_expr *expr, int stmt,
 		red->index = pet_expr_access_get_index(arg);
 		ok = red->ref != NULL && red->index != NULL;
 	}
+	if (ok) {
+		space = isl_space_range(isl_multi_pw_aff_get_space(red->index));
+		ok = isl_space_is_wrapping(space) != isl_bool_true;
+		isl_space_free(space);
+		if (!ok)
+			reduction_clear(red);
+	}
 	pet_expr_free(arg);
 
 	return ok;
 }
 
-/* Release what "red" holds, leaving it as empty as it started out.
+/* Count, in "user", the accesses of a statement that matter to whether
+ * it is an accumulation and nothing else.
  */
-static void reduction_clear(struct ppcg_reduction *red)
-{
-	isl_id_free(red->ref);
-	isl_multi_pw_aff_free(red->index);
-	red->ref = NULL;
-	red->index = NULL;
-}
+struct reduction_accesses {
+	/* The array the accumulator belongs to. */
+	isl_id *array;
+	/* Accesses to that array. */
+	int on_accumulator;
+	/* Accesses that write. */
+	int writes;
+};
 
-/* Does "expr" access the location identified by "user"?
- *
- * Called on every access of an expression, and stops the walk by
- * failing as soon as one of them is the one being looked for.
- */
-static int is_same_access(__isl_keep pet_expr *expr, void *user)
+static int count_access(__isl_keep pet_expr *expr, void *user)
 {
-	isl_id *wanted = user;
+	struct reduction_accesses *count = user;
 	isl_id *id;
-	int same;
 
 	id = pet_expr_access_get_id(expr);
-	same = id == wanted;
+	if (id == count->array)
+		count->on_accumulator++;
 	isl_id_free(id);
 
-	return same ? -1 : 0;
+	if (pet_expr_access_is_write(expr) == isl_bool_true)
+		count->writes++;
+
+	return 0;
 }
 
-/* Does "expr" read the location "red" accumulates into?
+/* Is the statement "tree" performs nothing but the accumulation "red"?
+ *
+ * The dependences that are dropped for an accumulation are the ones
+ * between the iterations that accumulate into the same location, and
+ * they are dropped on the grounds that every one of them is an
+ * accumulation carried by that location.  That only holds when the
+ * statement touches the accumulator once and writes nothing else:
+ *
+ *	s += s * 0.5f + a[i];
+ *
+ * reads the accumulator a second time, which makes each iteration
+ * depend on the value the previous one left rather than merely add to
+ * it, and
+ *
+ *	h[i % B] += a[i] * b[i % B]++;
+ *
+ * carries a dependence through b between the very iterations whose
+ * ordering would be dropped, leaving b to be updated by several threads
+ * at once.  Neither is an accumulation, whatever the operator says.
+ *
+ * The condition of an if is part of the statement and is counted too, so
+ * a condition that reads the accumulator, as in
+ *
+ *	if (s < 100.0f)
+ *		s += a[i];
+ *
+ * is refused here as well: whether an iteration accumulates would depend
+ * on how much has been accumulated so far.
  */
-static int touches_accumulator(__isl_keep pet_expr *expr,
+static int only_accumulates(__isl_keep pet_tree *tree,
 	struct ppcg_reduction *red)
 {
-	isl_id *id;
-	int touches;
+	struct reduction_accesses count = { NULL, 0, 0 };
+	int ok;
 
-	id = isl_multi_pw_aff_get_tuple_id(red->index, isl_dim_out);
-	touches = pet_expr_foreach_access_expr(expr, &is_same_access, id) < 0;
-	isl_id_free(id);
+	count.array = isl_multi_pw_aff_get_tuple_id(red->index, isl_dim_out);
+	if (!count.array)
+		return 0;
+	ok = pet_tree_foreach_access_expr(tree, &count_access, &count) >= 0;
+	isl_id_free(count.array);
 
-	return touches;
+	return ok && count.on_accumulator == 1 && count.writes == 1;
 }
 
 /* Look for an accumulation in "tree".
@@ -158,11 +211,6 @@ static int touches_accumulator(__isl_keep pet_expr *expr,
  * order, and the ones that do not are no obstacle to that.  pet keeps
  * such an if together with what it guards in a single statement, so the
  * condition is looked through.
- *
- * Unless the condition reads the accumulator, that is.  Whether an
- * iteration accumulates would then depend on how much has been
- * accumulated so far, and the result would depend on the order after
- * all.
  */
 static int find_in_tree(__isl_keep pet_tree *tree, int pos,
 	struct ppcg_reduction *red)
@@ -185,27 +233,29 @@ static int find_in_tree(__isl_keep pet_tree *tree, int pos,
 			return 0;
 		found = find_in_tree(then, pos, red);
 		pet_tree_free(then);
-		if (!found)
-			return 0;
-		expr = pet_tree_if_get_cond(tree);
-		if (!expr || touches_accumulator(expr, red)) {
-			pet_expr_free(expr);
-			reduction_clear(red);
-			return 0;
-		}
-		pet_expr_free(expr);
-		return 1;
+		return found;
 	default:
 		return 0;
 	}
 }
 
 /* Look for an accumulation in the body of statement "stmt".
+ *
+ * A statement only counts as one when the accumulation is all it does,
+ * so what was found is checked against the accesses of the whole
+ * statement before it is accepted.
  */
 static int find_in_stmt(struct pet_stmt *stmt, int pos,
 	struct ppcg_reduction *red)
 {
-	return find_in_tree(stmt->body, pos, red);
+	if (!find_in_tree(stmt->body, pos, red))
+		return 0;
+	if (only_accumulates(stmt->body, red))
+		return 1;
+
+	reduction_clear(red);
+
+	return 0;
 }
 
 struct ppcg_reductions *ppcg_find_reductions(struct ppcg_scop *scop)

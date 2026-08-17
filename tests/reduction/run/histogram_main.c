@@ -16,7 +16,7 @@ int main(void)
 	int i;
 
 	for (i = 0; i < N; ++i)
-		a[i] = (i * 37) % 101;
+		a[i] = 1 + (i * 37) % 101;
 	for (i = 0; i < B; ++i)
 		h[i] = 0;
 

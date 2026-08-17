@@ -252,10 +252,28 @@ function(add_reduction_run_test base_name tolerant)
     endforeach()
 endfunction()
 
+# What the accumulations do to the code generated without --openmp:
+# nothing.  The dependences they carry are only left out of the test that
+# asks whether a loop can be run in parallel, and that test is only made
+# when the loops are going to be marked.
+add_test(NAME Reduction_codegen_sum_plain
+    COMMAND ${CMAKE_COMMAND}
+        -DPPCG=$<TARGET_FILE:ppcg>
+        -DSOURCE=${REDUCTION_RUN_DIR}/sum.c
+        -DBINDIR=${CMAKE_CURRENT_BINARY_DIR}/tests/reduction/run/sum/plain
+        -DEXPECTED=${REDUCTION_RUN_DIR}/sum.plain
+        -DOPTIONS=--target=c
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunReductionCodegenTest.cmake
+)
+
 add_reduction_run_test(sum TRUE)
-add_reduction_run_test(chained TRUE)
+add_reduction_run_test(chained FALSE)
 add_reduction_run_test(conditional TRUE)
 add_reduction_run_test(histogram FALSE)
+add_reduction_run_test(operators FALSE)
+add_reduction_run_test(matvec TRUE)
+add_reduction_run_test(scatter TRUE)
+add_reduction_run_test(sections FALSE)
 add_reduction_run_test(aliased TRUE)
 
 #--------------------------------------------------------------------

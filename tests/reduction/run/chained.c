@@ -1,26 +1,30 @@
 #define N 1024
 
-/* Two accumulations, where the second reads the accumulator of the first.
+/* Two accumulations, where the second reads the accumulator of the
+ * first.
  *
  * The iterations of each accumulation may be run in any order, but the
  * two accumulations may not be interleaved: the second loop needs the
- * finished product.  The loops also have the same trip count, so a
+ * finished total.  The loops also have the same trip count, so a
  * schedule that ignored that would happily fuse them.
  *
- * The second loop must not name "prod" in its clause either, since it
+ * The second loop must not name "total" in its clause either, since it
  * only reads it, and a thread reading its own copy would start from the
  * identity of the operator instead of from the value it holds.
+ *
+ * Integers, so that the two results can be compared exactly and no
+ * error can hide in a rounding difference.
  */
-void chained(float a[N], float b[N], float *ps, float *pp)
+void chained(int a[N], int b[N], long *ps, long *pt)
 {
-	float prod = 1.0f;
-	float sum = 0.0f;
+	long total = 0;
+	long sum = 0;
 #pragma scop
 	for (int i = 0; i < N; ++i)
-		prod *= b[i];
+		total += b[i];
 	for (int i = 0; i < N; ++i)
-		sum += a[i] * prod;
+		sum += a[i] * total;
 #pragma endscop
 	*ps = sum;
-	*pp = prod;
+	*pt = total;
 }

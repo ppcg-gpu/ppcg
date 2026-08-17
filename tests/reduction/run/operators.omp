@@ -1,0 +1,4 @@
+#pragma omp parallel for reduction(*:prod)
+#pragma omp parallel for reduction(&:all)
+#pragma omp parallel for reduction(|:any)
+#pragma omp parallel for reduction(^:odd)

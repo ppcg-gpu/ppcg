@@ -145,16 +145,31 @@ An accumulation written under a condition of its own,
 		sum += a[i];
 
 is one as well: the iterations that do accumulate may still be run in
-any order, and the ones that do not are no obstacle to that.  Unless the
-condition reads the accumulator, that is, since whether an iteration
-accumulates would then depend on how much has been accumulated so far.
+any order, and the ones that do not are no obstacle to that.
 
-The loop carrying an accumulation stays sequential when the accumulator
-cannot be named:
+The accumulation does have to be all the statement does.  These are not
+accumulations, whatever the operator says, and the loops carrying them
+stay sequential:
+
+	if (sum < 100.0f)		/* the condition reads sum, so */
+		sum += a[i];		/* whether it accumulates depends
+					   on what came before */
+
+	sum += sum * 0.5f + a[i];	/* the right hand side reads sum, so
+					   each iteration needs the value
+					   the previous one left */
+
+	h[i % B] += a[i] * b[i % B]++;	/* b is updated too, by the very
+					   iterations that would be run at
+					   the same time */
+
+The loop also stays sequential when the accumulator cannot be named:
 
 - when the location accumulated into is not one the scop can work out
   from the iteration, as in h[idx[i]] += a[i], where it is read from
   memory;
+- when the accumulator is a member of a structure, which pet gives an
+  array of its own whose name the generated code does not declare;
 - when the elements accumulated into are not a constant range, or there
   are more than a megabyte of them, since every thread is given a copy
   of the whole section on its stack;
