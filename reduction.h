@@ -68,17 +68,34 @@ const char *ppcg_reduction_name(struct ppcg_reduction *red);
 const char *ppcg_reduction_op_str(struct ppcg_reduction *red);
 
 /* Every thread is given a copy of everything the clause of its loop
- * names, and the copies are placed on that thread's stack, so a loop
- * that names as much as a stack holds crashes the generated program
- * rather than speeding it up.  A megabyte is an order of magnitude
- * below the eight the default thread stack has, and a loop allowed that
- * much is still left several times faster than running it sequentially.
+ * names, the copies are placed on that thread's stack, and they are
+ * added up when the loop ends.  Both of those set a limit.
+ *
+ * The stack sets the one that matters for whether the program runs at
+ * all: a loop naming as much as a stack holds crashes it.
+ *
+ * Adding the copies up sets a lower one.  That work is the size of what
+ * is named times the number of threads, and no trip count amortises it,
+ * so a large enough section leaves the loop slower than the sequential
+ * code it came from.  Measured over four million iterations on a machine
+ * of eighty-eight threads, against the same loop run sequentially:
+ *
+ *	    8 KiB	 12 times faster
+ *	   64 KiB	  4 times faster
+ *	  512 KiB	  3 times slower
+ *	    1 MiB	  4 times slower
+ *
+ * Sixty-four kilobytes is where that crossing was found.  It is a
+ * judgement about what is worth doing rather than about what is
+ * correct: with few threads even a megabyte still pays, but the number
+ * of threads is not something the generated code can be compiled
+ * against.
  *
  * The whole of a loop is weighed against this, not one accumulator of
- * it: eight accumulators of a megabyte apiece are eight megabytes on
- * the stack of every thread, which is a stack.
+ * it: eight accumulators of the limit apiece are eight times the limit
+ * on the stack of every thread, and eight times the combining.
  */
-#define PPCG_REDUCTION_MAX_BYTES	(1024 * 1024)
+#define PPCG_REDUCTION_MAX_BYTES	(64 * 1024)
 
 /* How the accumulator of "red" is written in the reduction clause of a
  * loop that runs the iterations in "domain", or NULL when it cannot be

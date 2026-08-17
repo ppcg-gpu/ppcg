@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-#define SMALL 65536
+#define SMALL 4096
 #define BIG 262144
 
 void sections(double o[32], double t[8][8], double s[SMALL], double b[BIG]);

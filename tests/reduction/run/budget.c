@@ -1,15 +1,18 @@
-#define SMALL 8192
-#define LARGE 131072
+#define SMALL 1024
+#define LARGE 2048
 #define TRIPS (2 * LARGE)
 
 /* What a loop asks a thread to hold, all of it at once.
  *
  * Every thread is given a copy of everything the clause names, and the
- * copies go on that thread's stack, so what has to fit is the whole of
- * the clause and not each accumulator of it.  The first loop names
- * eight arrays of sixty-four kilobytes, which fits; the second names
- * eight of a megabyte, which is a stack, and has to stay sequential
- * rather than crash the program it was generated from.
+ * copies go on that thread's stack and are added up when the loop ends,
+ * so what has to be worth it is the whole of the clause and not each
+ * accumulator of it.  The first loop names eight arrays of eight
+ * kilobytes, which is worth it; the second names eight of sixteen, and
+ * has to stay sequential.
+ *
+ * The two are a factor of two apart, so that they say not only that
+ * there is a limit but roughly where it is.
  *
  * Both loops run twice over each array, so that the threads really do
  * share the elements: a loop that touched each of them once would need

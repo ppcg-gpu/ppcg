@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-#define SMALL 8192
+#define SMALL 1024
 #define LARGE 131072
 #define TRIPS (2 * LARGE)
 
