@@ -94,6 +94,49 @@ where file.c is the file containing the fragment.  The generated code
 is stored in file_host.c and file_kernel.cl.
 
 
+Using PPCG to generate OpenMP code
+
+The same fragment is turned into plain C with
+
+	ppcg --target=c --openmp file.c
+
+The loops that were found to be parallel are marked with
+
+	#pragma omp parallel for
+
+
+Reductions
+
+A statement of the form
+
+	x = x op expr
+
+written with a compound assignment, with op one of += *= &= |= ^=,
+computes a value that does not depend on the order in which the
+iterations are run.  PPCG recognises those statements and lets the
+loops around them be parallel, naming the accumulator in the pragma:
+
+	#pragma omp parallel for reduction(+:sum)
+
+so that each thread accumulates into a copy of its own and the copies
+are put back together afterwards.
+
+Note that this reassociates floating point addition and multiplication,
+which are not in fact associative, so a sum computed this way may differ
+in its last digits from the one the original program computes.  That is
+the same trade every other compiler makes for a reduction.
+
+Two restrictions apply.  The accumulator has to be a scalar, because
+that is what an OpenMP reduction clause can name; an accumulation into
+an element of an array, such as y[i] += A[i][j] * x[j], is left alone
+and the loop carrying it stays sequential.  And the accumulation has to
+be the whole statement, so one written under a condition of its own is
+not recognised either.
+
+The option --dump-reductions prints the accumulations that were found,
+one per line, which is a way to see why a loop did not become parallel.
+
+
 Specifying tile, grid and block sizes
 
 The iterations space tile size, grid size and block size can

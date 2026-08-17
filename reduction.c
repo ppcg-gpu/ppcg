@@ -5,6 +5,10 @@
 #include <isl/id.h>
 #include <isl/multi.h>
 #include <isl/space.h>
+#include <isl/flow.h>
+#include <isl/schedule.h>
+#include <isl/set.h>
+#include <isl/union_set.h>
 
 #include "reduction.h"
 
@@ -196,4 +200,95 @@ void ppcg_reductions_print(FILE *out, struct ppcg_scop *scop,
 	}
 	fprintf(out, "reductions %d of %d statements\n", reductions->n,
 		scop->pet->n_stmt);
+}
+
+int ppcg_reduction_is_scalar(struct ppcg_reduction *red)
+{
+	return isl_multi_pw_aff_dim(red->index, isl_dim_out) == 0;
+}
+
+const char *ppcg_reduction_name(struct ppcg_reduction *red)
+{
+	isl_id *id;
+	const char *name;
+
+	id = isl_multi_pw_aff_get_tuple_id(red->index, isl_dim_out);
+	name = id ? isl_id_get_name(id) : NULL;
+	isl_id_free(id);
+
+	return name;
+}
+
+const char *ppcg_reduction_op_str(struct ppcg_reduction *red)
+{
+	return op_str(red->op);
+}
+
+/* The iterations of the statement that performs "red".
+ */
+__isl_give isl_union_set *ppcg_reduction_domain(struct ppcg_reduction *red)
+{
+	isl_map *map;
+
+	map = isl_map_from_multi_pw_aff(isl_multi_pw_aff_copy(red->index));
+
+	return isl_union_set_from_set(isl_map_domain(map));
+}
+
+/* Every ordering between the iterations of one accumulation.
+ *
+ * What may be relaxed is not merely the dependence from one iteration to
+ * the next, but every constraint that says one of them has to run before
+ * another, because the result is the same whichever order they run in.
+ * With live range reordering in particular, ppcg states that ordering
+ * transitively, so removing only the immediate dependences would leave
+ * the rest of it in place and the loop sequential.
+ *
+ * The orderings are read off the original schedule: two iterations of the
+ * accumulation are ordered exactly when one is scheduled before the other.
+ *
+ * Only the iterations of the one statement are considered.  Taking every
+ * iteration that touches any accumulator at once would also drop the
+ * orderings between different accumulations, and those are ordinary
+ * dependences: a statement that accumulates into one location while
+ * reading another accumulator has to run after the accumulation into
+ * that other location has finished.
+ */
+static __isl_give isl_union_map *reduction_orderings(struct ppcg_scop *scop,
+	struct ppcg_reduction *red)
+{
+	isl_union_set *dom;
+	isl_union_map *sched;
+
+	dom = ppcg_reduction_domain(red);
+	sched = isl_schedule_get_map(scop->schedule);
+	sched = isl_union_map_intersect_domain(sched, dom);
+
+	return isl_union_map_lex_lt_union_map(isl_union_map_copy(sched),
+						sched);
+}
+
+__isl_give isl_union_map *ppcg_reduction_dependences(struct ppcg_scop *scop,
+	struct ppcg_reductions *reductions)
+{
+	isl_union_map *deps = NULL;
+	int i;
+
+	if (!scop || !reductions)
+		return NULL;
+
+	for (i = 0; i < reductions->n; ++i) {
+		struct ppcg_reduction *red = &reductions->red[i];
+		isl_union_map *orderings;
+
+		if (!ppcg_reduction_is_scalar(red))
+			continue;
+		orderings = reduction_orderings(scop, red);
+		if (!deps)
+			deps = orderings;
+		else
+			deps = isl_union_map_union(deps, orderings);
+	}
+
+	return deps;
 }

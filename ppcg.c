@@ -748,6 +748,19 @@ static void compute_dependences(struct ppcg_scop *scop)
 	scop->dep_false = isl_union_flow_get_may_dependence(flow);
 	scop->dep_false = isl_union_map_coalesce(scop->dep_false);
 	isl_union_flow_free(flow);
+
+	/* An accumulation orders its own iterations and nothing else, and
+	 * the result does not depend on that order.  Dropping those
+	 * dependences is what lets the loop be run in parallel; the C
+	 * backend then names the accumulators in a clause that combines
+	 * the partial results.  No other backend does that yet, so no
+	 * other target may have them dropped.
+	 */
+	if (scop->options->target == PPCG_TARGET_C) {
+		scop->reductions = ppcg_find_reductions(scop);
+		scop->reduction_deps =
+			ppcg_reduction_dependences(scop, scop->reductions);
+	}
 }
 
 /* Report an empty context, meaning that the original code
@@ -942,6 +955,9 @@ static void *ppcg_scop_free(struct ppcg_scop *ps)
 {
 	if (!ps)
 		return NULL;
+
+	ppcg_reductions_free(ps->reductions);
+	isl_union_map_free(ps->reduction_deps);
 
 	isl_set_free(ps->context);
 	isl_union_set_free(ps->domain);

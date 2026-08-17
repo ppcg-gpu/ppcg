@@ -71,6 +71,8 @@ int ppcg_extract_base_name(char *name, const char *input);
  *
  * "pet" is the original pet_scop.
  */
+struct ppcg_reductions;
+
 struct ppcg_scop {
 	struct ppcg_options *options;
 
@@ -104,6 +106,18 @@ struct ppcg_scop {
 	isl_schedule *schedule;
 
 	isl_id_to_ast_expr *names;
+
+	/* The accumulations the scop performs, whose dependences were
+	 * relaxed so that the loops carrying them could be run in
+	 * parallel.  The backend names them in the clause that puts the
+	 * partial results back together.
+	 */
+	struct ppcg_reductions *reductions;
+	/* The dependences the accumulations carry among their own
+	 * iterations.  They are kept out of what constrains the schedule
+	 * and left in everywhere else.
+	 */
+	isl_union_map *reduction_deps;
 
 	struct pet_scop *pet;
 };

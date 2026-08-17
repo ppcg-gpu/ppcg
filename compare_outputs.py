@@ -14,11 +14,12 @@ def extract_numeric_values(filename):
                     values.append(float(token))
     return values
 
-def compare_with_tolerance(ref_file, test_file, is_chemv):
+def compare_with_tolerance(ref_file, test_file, tolerant):
     """Compare output files with tolerance for floating point values."""
     try:
-        if is_chemv:
-            # For chemv, use tolerance-based comparison
+        if tolerant:
+            # Compare the numbers rather than the text, so that a result
+            # accumulated in a different order still counts as the same.
             ref_values = extract_numeric_values(ref_file)
             test_values = extract_numeric_values(test_file)
 
@@ -66,7 +67,7 @@ def compare_with_tolerance(ref_file, test_file, is_chemv):
                 return 1
             return 0
         else:
-            # For other examples, use exact comparison
+            # Otherwise the output has to match exactly.
             with open(ref_file, 'r') as f1, open(test_file, 'r') as f2:
                 if f1.read() != f2.read():
                     print(f"Files are different: {ref_file} {test_file}")
@@ -78,12 +79,12 @@ def compare_with_tolerance(ref_file, test_file, is_chemv):
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python compare_outputs.py <reference_file> <test_file> [is_chemv]")
+        print("Usage: python compare_outputs.py <reference_file> <test_file> [tolerant]")
         sys.exit(1)
 
     ref_file = sys.argv[1]
     test_file = sys.argv[2]
-    is_chemv = len(sys.argv) > 3 and str(sys.argv[3]).lower() in ("true", "1", "yes", "y", "t")
+    tolerant = len(sys.argv) > 3 and str(sys.argv[3]).lower() in ("true", "1", "yes", "y", "t")
 
     # Check if files exist
     if not os.path.exists(ref_file):
@@ -93,4 +94,4 @@ if __name__ == "__main__":
         print(f"Test file {test_file} does not exist")
         sys.exit(1)
 
-    sys.exit(compare_with_tolerance(ref_file, test_file, is_chemv))
+    sys.exit(compare_with_tolerance(ref_file, test_file, tolerant))

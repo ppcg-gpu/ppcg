@@ -164,6 +164,94 @@ foreach(source ${REDUCTION_FILES})
 endforeach()
 
 #--------------------------------------------------------------------
+# Reduction parallelisation
+#
+# Recognising an accumulation is only half of it.  The other half is that
+# the loop around it is then handed to OpenMP with a reduction clause, and
+# that the answer survives being computed by several threads at once.
+#
+# Both halves are checked, because either one on its own can be satisfied
+# by a compiler that does nothing: a sequential loop gives the right answer
+# too, and a clause that is emitted for a loop that is never run in
+# parallel proves nothing about the result.
+#--------------------------------------------------------------------
+
+set(REDUCTION_RUN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests/reduction/run")
+
+# Check the code generated for "base_name" against the pragmas it has to
+# contain, and check that running it gives the same answer as running the
+# program it was generated from.
+#
+# The corpus is a pair of files: base_name.c holds the scop and is also
+# the reference implementation, base_name_main.c drives it and prints
+# what it computed.
+function(add_reduction_run_test base_name)
+    set(source ${REDUCTION_RUN_DIR}/${base_name}.c)
+    set(main ${REDUCTION_RUN_DIR}/${base_name}_main.c)
+    set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/tests/reduction/run/${base_name}")
+    file(MAKE_DIRECTORY ${output_dir})
+
+    add_test(NAME Reduction_codegen_${base_name}
+        COMMAND ${CMAKE_COMMAND}
+            -DPPCG=$<TARGET_FILE:ppcg>
+            -DSOURCE=${source}
+            -DBINDIR=${output_dir}/codegen
+            -DEXPECTED=${REDUCTION_RUN_DIR}/${base_name}.omp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunReductionCodegenTest.cmake
+    )
+
+    if(NOT OpenMP_C_FOUND)
+        return()
+    endif()
+
+    set(reference reduction_${base_name}_ref)
+    add_executable(${reference} ${source} ${main})
+    set_target_properties(${reference} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${output_dir}
+        C_STANDARD 99
+        C_EXTENSIONS ON
+    )
+
+    set(candidate reduction_${base_name}_omp)
+    add_ppcg_program(${candidate} ${source} ${output_dir}
+        "--target=c;--openmp" ${main})
+    target_link_libraries(${candidate} PRIVATE OpenMP::OpenMP_C)
+
+    # Once with a thread count that divides the trip count evenly and
+    # once with one that does not, since an accumulator that is combined
+    # wrongly tends to show up at the boundaries rather than in the
+    # middle.
+    #
+    # The comparison is a tolerant one: the partial results are put back
+    # together in a different order than the sequential program computes
+    # them in, and floating point addition is not associative.  That is
+    # the trade every compiler makes for a reduction; what would not be
+    # tolerable, and what this test is looking for, is a lost update,
+    # which is off by whole terms.
+    foreach(threads 8 3)
+        # A directory of its own for each thread count, because the two
+        # tests may be run at the same time and the driver names the
+        # captured output after the program rather than after the test.
+        set(threads_dir ${output_dir}/threads_${threads})
+        file(MAKE_DIRECTORY ${threads_dir})
+        add_test(NAME Reduction_run_${base_name}_${threads}
+            COMMAND ${CMAKE_COMMAND}
+                -DREFERENCE=$<TARGET_FILE:${reference}>
+                -DCANDIDATE=$<TARGET_FILE:${candidate}>
+                -DOUTPUT_DIR=${threads_dir}
+                "-DCOMPARE=${Python3_EXECUTABLE}|${COMPARE_OUTPUTS}"
+                -DCOMPARE_ARGS=TRUE
+                -P ${RUN_AND_COMPARE}
+        )
+        set_tests_properties(Reduction_run_${base_name}_${threads} PROPERTIES
+            ENVIRONMENT "OMP_NUM_THREADS=${threads}")
+    endforeach()
+endfunction()
+
+add_reduction_run_test(sum)
+add_reduction_run_test(chained)
+
+#--------------------------------------------------------------------
 # C target tests
 #
 # These need no accelerator runtime, so they are the tests that always
