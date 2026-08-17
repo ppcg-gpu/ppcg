@@ -126,18 +126,18 @@ which are not in fact associative, so a sum computed this way may differ
 in its last digits from the one the original program computes.  That is
 the same trade every other compiler makes for a reduction.
 
-An accumulator that is an element of an array cannot be named in a
-clause, since which element it is may only be known once the loop runs.
-When the threads of the loop share such an element, as they do in
-h[i % B] += a[i], the accumulation is made atomic instead:
+When the accumulator is an element of an array, the clause names a
+section of that array instead, since which element an iteration
+accumulates into is only known once the loop runs.  The section covers
+every element the loop accumulates into:
 
-	#pragma omp parallel for
+	#pragma omp parallel for reduction(+:h[0:16])
 	for (int c0 = 0; c0 <= 4095; c0 += 1)
-	  #pragma omp atomic
 	  h[c0 % 16] += a[c0];
 
-When they do not, as in y[i] += A[i][j] * x[j] with the loop over i,
-nothing has to be done: each thread has its own y[i] already.
+This only applies when the threads really share those elements.  In
+y[i] += A[i][j] * x[j] with the loop over i they do not, each thread has
+its own y[i] already, and nothing is named.
 
 An accumulation written under a condition of its own,
 
@@ -149,10 +149,18 @@ any order, and the ones that do not are no obstacle to that.  Unless the
 condition reads the accumulator, that is, since whether an iteration
 accumulates would then depend on how much has been accumulated so far.
 
-One restriction applies.  The location accumulated into has to be one
-the scop can work out from the iteration, which rules out
-h[idx[i]] += a[i], where it is read from memory.  The loop carrying such
-an accumulation stays sequential.
+The loop carrying an accumulation stays sequential when the accumulator
+cannot be named:
+
+- when the location accumulated into is not one the scop can work out
+  from the iteration, as in h[idx[i]] += a[i], where it is read from
+  memory;
+- when the elements accumulated into are not a constant range, or there
+  are more than a megabyte of them, since every thread is given a copy
+  of the whole section on its stack;
+- when the loop reaches the same array by any other access, since within
+  the loop the array stands for the copy and that access would silently
+  be redirected to it.
 
 The option --dump-reductions prints the accumulations that were found,
 one per line, which is a way to see why a loop did not become parallel.

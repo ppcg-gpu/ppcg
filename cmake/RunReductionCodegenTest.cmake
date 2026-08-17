@@ -8,7 +8,8 @@
 #   PPCG      the ppcg program
 #   SOURCE    the input
 #   BINDIR    directory to place the generated code in
-#   EXPECTED  file holding the lines the generated code has to contain
+#   EXPECTED  file holding the lines the generated code has to contain,
+#             or, written with a leading '!', the lines it may not
 
 foreach(required PPCG SOURCE BINDIR EXPECTED)
     if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
@@ -40,6 +41,7 @@ endif()
 # a string on newlines would leave those to be taken as list separators.
 file(STRINGS "${EXPECTED}" wanted_lines)
 file(STRINGS "${generated}" code_lines)
+file(READ "${generated}" code)
 foreach(line ${code_lines})
     string(STRIP "${line}" line)
     list(APPEND stripped_code_lines "${line}")
@@ -47,8 +49,24 @@ endforeach()
 
 foreach(wanted ${wanted_lines})
     string(STRIP "${wanted}" wanted)
-    if(NOT "${wanted}" IN_LIST stripped_code_lines)
-        file(READ "${generated}" code)
+
+    # A line the generated code may not contain, which is how a corpus
+    # says that its loop has to stay sequential.
+    #
+    # A required line is matched whole, so that a clause naming more
+    # than it should does not pass for the one that was asked for.  A
+    # forbidden one is matched anywhere, since what makes a loop
+    # parallel is the beginning of the pragma and whatever follows it
+    # would otherwise let it through.
+    if(wanted MATCHES "^!")
+        string(SUBSTRING "${wanted}" 1 -1 wanted)
+        string(FIND "${code}" "${wanted}" position)
+        if(NOT position EQUAL -1)
+            message(FATAL_ERROR
+                "the generated code contains\n  ${wanted}\n"
+                "--- generated ---\n${code}")
+        endif()
+    elseif(NOT "${wanted}" IN_LIST stripped_code_lines)
         message(FATAL_ERROR
             "the generated code does not contain\n  ${wanted}\n"
             "--- generated ---\n${code}")

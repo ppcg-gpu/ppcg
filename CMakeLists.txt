@@ -256,6 +256,7 @@ add_reduction_run_test(sum TRUE)
 add_reduction_run_test(chained TRUE)
 add_reduction_run_test(conditional TRUE)
 add_reduction_run_test(histogram FALSE)
+add_reduction_run_test(aliased TRUE)
 
 #--------------------------------------------------------------------
 # C target tests

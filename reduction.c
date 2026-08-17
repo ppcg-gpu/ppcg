@@ -1,14 +1,17 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <isl/aff.h>
 #include <isl/id.h>
 #include <isl/multi.h>
 #include <isl/space.h>
 #include <isl/flow.h>
+#include <isl/ilp.h>
 #include <isl/schedule.h>
 #include <isl/set.h>
 #include <isl/union_set.h>
+#include <isl/val.h>
 
 #include "reduction.h"
 
@@ -309,6 +312,173 @@ const char *ppcg_reduction_op_str(struct ppcg_reduction *red)
 static __isl_give isl_map *reduction_access(struct ppcg_reduction *red)
 {
 	return isl_map_from_multi_pw_aff(isl_multi_pw_aff_copy(red->index));
+}
+
+/* Append "suffix" to "s".  Both are freed, and NULL is returned, when
+ * either of them is NULL or the result cannot be allocated, so that a
+ * chain of these only has to be checked once, at the end.
+ */
+static char *append(char *s, char *suffix)
+{
+	size_t len;
+	char *grown;
+
+	if (!s || !suffix) {
+		free(s);
+		free(suffix);
+		return NULL;
+	}
+
+	len = strlen(s);
+	grown = realloc(s, len + strlen(suffix) + 1);
+	if (grown)
+		strcpy(grown + len, suffix);
+	else
+		free(s);
+	free(suffix);
+
+	return grown;
+}
+
+/* The size in bytes of an element of the array "red" accumulates into,
+ * or 0 when the scop does not say.
+ */
+static int reduction_element_size(struct ppcg_scop *scop,
+	struct ppcg_reduction *red)
+{
+	const char *name;
+	int i;
+
+	name = ppcg_reduction_name(red);
+	if (!name)
+		return 0;
+
+	for (i = 0; i < scop->pet->n_array; ++i) {
+		const char *array;
+
+		array = isl_set_get_tuple_name(scop->pet->arrays[i]->extent);
+		if (array && !strcmp(array, name))
+			return scop->pet->arrays[i]->element_size;
+	}
+
+	return 0;
+}
+
+/* Every thread is given a copy of the whole of the section, and the
+ * copy is placed on that thread's stack, so a section of the size of a
+ * stack crashes the generated program rather than speeding it up.  A
+ * megabyte is an order of magnitude below the eight the default thread
+ * stack has, and a section of that size still leaves the loop several
+ * times faster than running it sequentially.
+ */
+#define PPCG_REDUCTION_MAX_BYTES	(1024 * 1024)
+
+/* The section of the accumulator of "red" that the iterations in
+ * "domain" accumulate into, as it is written in an OpenMP reduction
+ * clause, or NULL when there is no such section to write.
+ *
+ * A clause names a section rather than a single element because which
+ * element an iteration accumulates into is only known once the loop
+ * runs.  Every thread is given a copy of the whole section and the
+ * copies are added up afterwards, which is what makes the loop worth
+ * running in parallel; an atomic update of the element instead leaves
+ * the loop no faster than it was, since the accumulation is all the
+ * loop does.
+ *
+ * There is nothing to write when the elements accumulated into are not
+ * a constant range, when there are too many of them, or when the loop
+ * reaches the same array by any other means: within the loop the array
+ * stands for the copy, so an access that is not part of the
+ * accumulation would silently be redirected to it.
+ */
+static char *reduction_section(struct ppcg_scop *scop,
+	struct ppcg_reduction *red, __isl_keep isl_union_set *domain)
+{
+	isl_map *acc;
+	isl_union_map *other;
+	isl_set *accessed;
+	char *section;
+	long elements = 1;
+	int size, i, n;
+
+	size = reduction_element_size(scop, red);
+	if (size <= 0)
+		return NULL;
+
+	acc = reduction_access(red);
+
+	other = isl_union_map_union(isl_union_map_copy(scop->reads),
+				isl_union_map_copy(scop->may_writes));
+	other = isl_union_map_intersect_domain(other,
+				isl_union_set_copy(domain));
+	other = isl_union_map_intersect_range(other,
+			isl_union_set_from_set(isl_set_universe(
+				isl_space_range(isl_map_get_space(acc)))));
+	other = isl_union_map_subtract(other,
+				isl_union_map_from_map(isl_map_copy(acc)));
+	if (isl_union_map_is_empty(other) != isl_bool_true) {
+		isl_union_map_free(other);
+		isl_map_free(acc);
+		return NULL;
+	}
+	isl_union_map_free(other);
+
+	accessed = isl_map_range(acc);
+
+	section = strdup("");
+	n = isl_set_dim(accessed, isl_dim_set);
+	for (i = 0; i < n; ++i) {
+		isl_val *min, *max;
+		long lo, len;
+		int usable;
+		char buf[64];
+
+		min = isl_set_dim_min_val(isl_set_copy(accessed), i);
+		max = isl_set_dim_max_val(isl_set_copy(accessed), i);
+		usable = isl_val_is_int(min) == isl_bool_true &&
+			isl_val_is_int(max) == isl_bool_true;
+		if (usable) {
+			lo = isl_val_get_num_si(min);
+			len = isl_val_get_num_si(max) - lo + 1;
+			snprintf(buf, sizeof(buf), "[%ld:%ld]", lo, len);
+			elements *= len;
+		}
+		isl_val_free(min);
+		isl_val_free(max);
+		if (!usable) {
+			free(section);
+			section = NULL;
+			break;
+		}
+		section = append(section, strdup(buf));
+	}
+	isl_set_free(accessed);
+
+	if (section && elements * size > PPCG_REDUCTION_MAX_BYTES) {
+		free(section);
+		section = NULL;
+	}
+
+	return section;
+}
+
+char *ppcg_reduction_clause_name(struct ppcg_scop *scop,
+	struct ppcg_reduction *red, __isl_keep isl_union_set *domain)
+{
+	const char *name;
+	char *section;
+
+	name = ppcg_reduction_name(red);
+	if (!name)
+		return NULL;
+	if (ppcg_reduction_is_scalar(red))
+		return strdup(name);
+
+	section = reduction_section(scop, red, domain);
+	if (!section)
+		return NULL;
+
+	return append(strdup(name), section);
 }
 
 /* The iterations of the statement that performs "red".

@@ -57,11 +57,7 @@ void ppcg_reductions_print(FILE *out, struct ppcg_scop *scop,
 	struct ppcg_reductions *reductions);
 
 /* Is the location accumulated into by "red" a single one, the same for
- * every iteration?  Such a location can be named in a reduction clause,
- * so that each thread accumulates into a copy of its own and the copies
- * are put back together afterwards.  An element of an array cannot,
- * since which element it is may only be known once the code runs, so
- * those accumulations are made atomic instead.
+ * every iteration?
  */
 int ppcg_reduction_is_scalar(struct ppcg_reduction *red);
 
@@ -70,6 +66,19 @@ const char *ppcg_reduction_name(struct ppcg_reduction *red);
 
 /* The operator of "red", as it is written in an OpenMP clause. */
 const char *ppcg_reduction_op_str(struct ppcg_reduction *red);
+
+/* How the accumulator of "red" is written in the reduction clause of a
+ * loop that runs the iterations in "domain", or NULL when it cannot be
+ * written in one at all, in which case that loop may not be run in
+ * parallel.  The caller frees the result.
+ *
+ * A single location is named on its own.  An element of an array is
+ * named through a section covering every element the loop accumulates
+ * into, since which of them an iteration accumulates into is only known
+ * once the loop runs.
+ */
+char *ppcg_reduction_clause_name(struct ppcg_scop *scop,
+	struct ppcg_reduction *red, __isl_keep isl_union_set *domain);
 
 /* The pairs of iterations of "red" that accumulate into the same
  * location.  A loop only has to name the accumulator in a clause if it

@@ -1,2 +1,1 @@
-#pragma omp parallel for
-#pragma omp atomic
+#pragma omp parallel for reduction(+:h[0:16])

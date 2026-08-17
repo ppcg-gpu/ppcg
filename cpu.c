@@ -42,12 +42,6 @@
 struct ppcg_stmt {
 	struct pet_stmt *stmt;
 
-	/* The statement accumulates into a location that the parallel
-	 * loop it is in shares between its threads, so its update has to
-	 * be made atomic.
-	 */
-	int atomic;
-
 	isl_id_to_ast_expr *ref2expr;
 };
 
@@ -116,13 +110,6 @@ struct ast_build_userinfo {
 
 	/* Are we currently in a parallel for loop? */
 	int in_parallel_for;
-
-	/* One entry per statement of the scop, set when the statement
-	 * accumulates into a location that the parallel for loop we are
-	 * in shares between its threads.  Such an accumulation is made
-	 * atomic, since its accumulator cannot be named in a clause.
-	 */
-	char *atomic;
 
 	/* The contraction of the entire schedule tree. */
 	isl_union_pw_multi_aff *contraction;
@@ -251,10 +238,23 @@ static int ast_schedule_dim_is_parallel(__isl_keep isl_ast_build *build,
 	return dim_is_coincident(build, build_info, deps);
 }
 
-/* Work out what has to be said about the accumulations the loop at
- * "build" runs: return the OpenMP clause naming the accumulators it
- * shares between its threads, or NULL when there are none, and mark the
- * statements whose accumulation has to be made atomic instead.
+/* The iterations of the scop that the loop at "build" runs.
+ */
+static __isl_give isl_union_set *ast_build_domain(
+	__isl_keep isl_ast_build *build,
+	struct ast_build_userinfo *build_info)
+{
+	isl_union_map *schedule;
+
+	schedule = isl_ast_build_get_schedule(build);
+	schedule = isl_union_map_preimage_domain_union_pw_multi_aff(schedule,
+		isl_union_pw_multi_aff_copy(build_info->contraction));
+
+	return isl_union_map_domain(schedule);
+}
+
+/* The OpenMP clause naming the accumulators the loop at "build" shares
+ * between its threads, or NULL when there are none.
  *
  * The dependences that ordered the iterations of these accumulations
  * were removed so that the loop could be run in parallel, so the loop
@@ -268,48 +268,62 @@ static int ast_schedule_dim_is_parallel(__isl_keep isl_ast_build *build,
  * thread has to itself already, as y[i] has in y[i] += A[i][j] * x[j]:
  * naming it would make each thread privatise the whole of y for nothing.
  *
- * A shared accumulator that is an element of an array is not named
- * either, since which element it is may only be known once the code
- * runs.  Those accumulations are marked to be made atomic instead.
+ * When an accumulator the threads do share cannot be named at all,
+ * "*ok" is set to 0.  The loop then may not be run in parallel, since
+ * what made it look parallel was leaving out the dependences that order
+ * the accumulation, and only the clause makes up for that.
  */
-static char *handle_reductions(__isl_keep isl_ast_build *build,
-	struct ast_build_userinfo *build_info)
+static char *reduction_clause(__isl_keep isl_ast_build *build,
+	struct ast_build_userinfo *build_info, int *ok)
 {
 	struct ppcg_scop *scop = build_info->scop;
+	isl_union_set *domain = NULL;
 	char *clause = NULL;
 	size_t len = 0;
 	int i;
 
+	*ok = 1;
 	if (!scop || !scop->reductions)
 		return NULL;
 
 	for (i = 0; i < scop->reductions->n; ++i) {
 		struct ppcg_reduction *red = &scop->reductions->red[i];
-		const char *name, *op;
+		const char *op;
+		char *name;
 		size_t need;
 		char *grown;
 
 		if (dim_is_coincident(build, build_info,
 					ppcg_reduction_same_location(red)))
 			continue;
-		if (!ppcg_reduction_is_scalar(red)) {
-			build_info->atomic[red->stmt] = 1;
-			continue;
+
+		if (!domain)
+			domain = ast_build_domain(build, build_info);
+		name = ppcg_reduction_clause_name(scop, red, domain);
+		if (!name) {
+			*ok = 0;
+			break;
 		}
 
-		name = ppcg_reduction_name(red);
 		op = ppcg_reduction_op_str(red);
-		if (!name)
-			continue;
 		need = len + strlen(" reduction(:)") + strlen(op) +
 			strlen(name) + 1;
 		grown = realloc(clause, need);
-		if (!grown) {
-			free(clause);
-			return NULL;
-		}
+		if (grown)
+			len += sprintf(grown + len, " reduction(%s:%s)", op,
+					name);
+		else
+			*ok = 0;
+		free(name);
 		clause = grown;
-		len += sprintf(clause + len, " reduction(%s:%s)", op, name);
+		if (!*ok)
+			break;
+	}
+
+	isl_union_set_free(domain);
+	if (!*ok) {
+		free(clause);
+		return NULL;
 	}
 
 	return clause;
@@ -321,15 +335,22 @@ static void mark_openmp_parallel(__isl_keep isl_ast_build *build,
 	struct ast_build_userinfo *build_info,
 	struct ast_node_userinfo *node_info)
 {
+	char *clause;
+	int ok;
+
 	if (build_info->in_parallel_for)
 		return;
 
-	if (ast_schedule_dim_is_parallel(build, build_info)) {
-		build_info->in_parallel_for = 1;
-		node_info->is_openmp = 1;
-		node_info->reduction_clause =
-			handle_reductions(build, build_info);
-	}
+	if (!ast_schedule_dim_is_parallel(build, build_info))
+		return;
+
+	clause = reduction_clause(build, build_info, &ok);
+	if (!ok)
+		return;
+
+	build_info->in_parallel_for = 1;
+	node_info->is_openmp = 1;
+	node_info->reduction_clause = clause;
 }
 
 /* Allocate an ast_node_info structure and initialize it with default values.
@@ -400,7 +421,6 @@ static __isl_give isl_ast_node *ast_build_after_for(
 	if (info && info->is_openmp) {
 		build_info = (struct ast_build_userinfo *) user;
 		build_info->in_parallel_for = 0;
-		memset(build_info->atomic, 0, build_info->scop->pet->n_stmt);
 	}
 
 	isl_id_free(id);
@@ -443,12 +463,6 @@ static __isl_give isl_printer *print_user(__isl_take isl_printer *p,
 	id = isl_ast_node_get_annotation(node);
 	stmt = isl_id_get_user(id);
 	isl_id_free(id);
-
-	if (stmt->atomic) {
-		p = isl_printer_start_line(p);
-		p = isl_printer_print_str(p, "#pragma omp atomic");
-		p = isl_printer_end_line(p);
-	}
 
 	p = pet_stmt_print_body(stmt->stmt, p, stmt->ref2expr);
 
@@ -548,8 +562,7 @@ static __isl_give isl_multi_pw_aff *pullback_index(
 static __isl_give isl_ast_node *at_each_domain(__isl_take isl_ast_node *node,
 	__isl_keep isl_ast_build *build, void *user)
 {
-	struct ast_build_userinfo *build_info = user;
-	struct ppcg_scop *scop = build_info->scop;
+	struct ppcg_scop *scop = user;
 	isl_ast_expr *expr, *arg;
 	isl_ctx *ctx;
 	isl_id *id;
@@ -573,7 +586,6 @@ static __isl_give isl_ast_node *at_each_domain(__isl_take isl_ast_node *node,
 	if (pos < 0)
 		goto error;
 	stmt->stmt = scop->pet->stmts[pos];
-	stmt->atomic = build_info->atomic[pos];
 
 	map = isl_map_from_union_map(isl_ast_build_get_schedule(build));
 	map = isl_map_reverse(map);
@@ -666,15 +678,10 @@ static isl_stat init_build_info(struct ast_build_userinfo *build_info,
 
 	build_info->scop = scop;
 	build_info->in_parallel_for = 0;
-	build_info->atomic = isl_calloc_array(isl_schedule_get_ctx(schedule),
-					char, scop->pet->n_stmt);
 	build_info->contraction =
 		isl_schedule_node_get_subtree_contraction(node);
 
 	isl_schedule_node_free(node);
-
-	if (!build_info->atomic && scop->pet->n_stmt)
-		return isl_stat_error;
 
 	return isl_stat_non_null(build_info->contraction);
 }
@@ -684,7 +691,6 @@ static isl_stat init_build_info(struct ast_build_userinfo *build_info,
 static void clear_build_info(struct ast_build_userinfo *build_info)
 {
 	isl_union_pw_multi_aff_free(build_info->contraction);
-	free(build_info->atomic);
 }
 
 /* Code generate the scop 'scop' using "schedule"
@@ -710,18 +716,12 @@ static __isl_give isl_printer *print_scop(struct ppcg_scop *scop,
 	build = isl_ast_build_alloc(ctx);
 	iterators = ppcg_scop_generate_names(scop, depth, "c");
 	build = isl_ast_build_set_iterators(build, iterators);
-
-	/* The build information is what tells a statement whether it has
-	 * to be made atomic, so it is needed whether or not the loops end
-	 * up being marked parallel.
-	 */
-	if (init_build_info(&build_info, scop, schedule) < 0)
-		build = isl_ast_build_free(build);
-
-	build = isl_ast_build_set_at_each_domain(build, &at_each_domain,
-						&build_info);
+	build = isl_ast_build_set_at_each_domain(build, &at_each_domain, scop);
 
 	if (options->openmp) {
+		if (init_build_info(&build_info, scop, schedule) < 0)
+			build = isl_ast_build_free(build);
+
 		build = isl_ast_build_set_before_each_for(build,
 							&ast_build_before_for,
 							&build_info);
@@ -733,7 +733,8 @@ static __isl_give isl_printer *print_scop(struct ppcg_scop *scop,
 	tree = isl_ast_build_node_from_schedule(build, schedule);
 	isl_ast_build_free(build);
 
-	clear_build_info(&build_info);
+	if (options->openmp)
+		clear_build_info(&build_info);
 
 	print_options = isl_ast_print_options_alloc(ctx);
 	print_options = isl_ast_print_options_set_print_user(print_options,
