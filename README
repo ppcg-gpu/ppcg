@@ -170,6 +170,9 @@ The loop also stays sequential when the accumulator cannot be named:
   memory;
 - when the accumulator is a member of a structure, which pet gives an
   array of its own whose name the generated code does not declare;
+- when the accumulator is a pointer being walked, since what is added
+  up is then an address, which no reduction clause can put back
+  together;
 - when which elements are accumulated into depends on a value only
   known at run time, as it does when the loop bound is a parameter,
   since the section would have to be widened to cover every value that

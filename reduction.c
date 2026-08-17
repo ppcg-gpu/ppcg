@@ -560,12 +560,32 @@ static char *reduction_section(struct ppcg_scop *scop,
 char *ppcg_reduction_clause_name(struct ppcg_scop *scop,
 	struct ppcg_reduction *red, __isl_keep isl_union_set *domain)
 {
+	struct pet_array *array;
 	const char *name;
 	char *section;
 
 	name = ppcg_reduction_name(red);
 	if (!name)
 		return NULL;
+
+	/* What is accumulated into has to be the array itself, or one of
+	 * its elements, and not a pointer to it.  Walking a pointer,
+	 *
+	 *	for (i) p += step[i];
+	 *
+	 * adds up as freely as anything else, but the sum is an address,
+	 * which is not a thing a reduction clause can be asked to put
+	 * back together.  pet models the memory such a pointer reaches
+	 * as an array of its own, so the accumulation names that array
+	 * while indexing fewer of its dimensions than it has.
+	 */
+	array = reduction_array(scop, red);
+	if (!array)
+		return NULL;
+	if (isl_multi_pw_aff_dim(red->index, isl_dim_out) !=
+	    isl_set_dim(array->extent, isl_dim_set))
+		return NULL;
+
 	if (ppcg_reduction_is_scalar(red))
 		return strdup(name);
 
