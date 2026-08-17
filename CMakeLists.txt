@@ -274,6 +274,8 @@ add_reduction_run_test(operators FALSE)
 add_reduction_run_test(matvec TRUE)
 add_reduction_run_test(scatter TRUE)
 add_reduction_run_test(sections FALSE)
+add_reduction_run_test(slice TRUE)
+add_reduction_run_test(parametric FALSE)
 add_reduction_run_test(aliased TRUE)
 
 #--------------------------------------------------------------------

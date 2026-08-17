@@ -390,10 +390,10 @@ static char *append(char *s, char *suffix)
 	return grown;
 }
 
-/* The size in bytes of an element of the array "red" accumulates into,
- * or 0 when the scop does not say.
+/* The pet_array of the array "red" accumulates into, or NULL when the
+ * scop does not describe it.
  */
-static int reduction_element_size(struct ppcg_scop *scop,
+static struct pet_array *reduction_array(struct ppcg_scop *scop,
 	struct ppcg_reduction *red)
 {
 	const char *name;
@@ -401,17 +401,40 @@ static int reduction_element_size(struct ppcg_scop *scop,
 
 	name = ppcg_reduction_name(red);
 	if (!name)
-		return 0;
+		return NULL;
 
 	for (i = 0; i < scop->pet->n_array; ++i) {
 		const char *array;
 
 		array = isl_set_get_tuple_name(scop->pet->arrays[i]->extent);
 		if (array && !strcmp(array, name))
-			return scop->pet->arrays[i]->element_size;
+			return scop->pet->arrays[i];
 	}
 
-	return 0;
+	return NULL;
+}
+
+/* Do the bounds of dimension "pos" of "set" have constant values, and if
+ * so, which?
+ */
+static int constant_range(__isl_keep isl_set *set, int pos, long *lo,
+	long *len)
+{
+	isl_val *min, *max;
+	int ok;
+
+	min = isl_set_dim_min_val(isl_set_copy(set), pos);
+	max = isl_set_dim_max_val(isl_set_copy(set), pos);
+	ok = isl_val_is_int(min) == isl_bool_true &&
+		isl_val_is_int(max) == isl_bool_true;
+	if (ok) {
+		*lo = isl_val_get_num_si(min);
+		*len = isl_val_get_num_si(max) - *lo + 1;
+	}
+	isl_val_free(min);
+	isl_val_free(max);
+
+	return ok;
 }
 
 /* Every thread is given a copy of the whole of the section, and the
@@ -435,24 +458,35 @@ static int reduction_element_size(struct ppcg_scop *scop,
  * the loop no faster than it was, since the accumulation is all the
  * loop does.
  *
- * There is nothing to write when the elements accumulated into are not
- * a constant range, when there are too many of them, or when the loop
- * reaches the same array by any other means: within the loop the array
- * stands for the copy, so an access that is not part of the
- * accumulation would silently be redirected to it.
+ * There is nothing to write when
+ *
+ * - the loop reaches the same array by any other means, since within the
+ *   loop the array stands for the copy, so an access that is not part of
+ *   the accumulation would silently be redirected to it;
+ * - which elements are accumulated into depends on a parameter.  The
+ *   range would then have to be widened to cover every value the
+ *   parameter may take, and the copies would be added back into elements
+ *   the program never meant to have: h[i % 16] += a[i] with i below a
+ *   parameter n reaches past the end of an h of n elements;
+ * - the elements are not a constant range, or there are too many of
+ *   them;
+ * - the section would not be contiguous.  A section of an array of more
+ *   than one dimension only is when it covers the whole of every
+ *   dimension but the outermost.
  */
 static char *reduction_section(struct ppcg_scop *scop,
 	struct ppcg_reduction *red, __isl_keep isl_union_set *domain)
 {
+	struct pet_array *array;
 	isl_map *acc;
 	isl_union_map *other;
 	isl_set *accessed;
 	char *section;
 	long elements = 1;
-	int size, i, n;
+	int i, n;
 
-	size = reduction_element_size(scop, red);
-	if (size <= 0)
+	array = reduction_array(scop, red);
+	if (!array || array->element_size <= 0)
 		return NULL;
 
 	acc = reduction_access(red);
@@ -473,38 +507,49 @@ static char *reduction_section(struct ppcg_scop *scop,
 	}
 	isl_union_map_free(other);
 
+	/* Only what this loop runs, so that the section does not name
+	 * elements another loop reaches.  The elements have to follow
+	 * from the iterations alone: when a parameter has a say in which
+	 * of them are accumulated into, the range isl can give covers
+	 * every value that parameter may take, which is more elements
+	 * than the program has.
+	 */
+	acc = isl_map_intersect_domain(acc,
+			isl_set_from_union_set(isl_union_set_copy(domain)));
+	if (isl_map_involves_dims(acc, isl_dim_param, 0,
+				isl_map_dim(acc, isl_dim_param))) {
+		isl_map_free(acc);
+		return NULL;
+	}
+
 	accessed = isl_map_range(acc);
+	n = isl_set_dim(accessed, isl_dim_set);
 
 	section = strdup("");
-	n = isl_set_dim(accessed, isl_dim_set);
 	for (i = 0; i < n; ++i) {
-		isl_val *min, *max;
-		long lo, len;
-		int usable;
+		long lo, len, whole_lo, whole_len;
 		char buf[64];
 
-		min = isl_set_dim_min_val(isl_set_copy(accessed), i);
-		max = isl_set_dim_max_val(isl_set_copy(accessed), i);
-		usable = isl_val_is_int(min) == isl_bool_true &&
-			isl_val_is_int(max) == isl_bool_true;
-		if (usable) {
-			lo = isl_val_get_num_si(min);
-			len = isl_val_get_num_si(max) - lo + 1;
-			snprintf(buf, sizeof(buf), "[%ld:%ld]", lo, len);
-			elements *= len;
-		}
-		isl_val_free(min);
-		isl_val_free(max);
-		if (!usable) {
+		if (!constant_range(accessed, i, &lo, &len)) {
 			free(section);
 			section = NULL;
 			break;
 		}
+		if (i > 0 &&
+		    (!constant_range(array->extent, i, &whole_lo, &whole_len) ||
+		     lo != whole_lo || len != whole_len)) {
+			free(section);
+			section = NULL;
+			break;
+		}
+		snprintf(buf, sizeof(buf), "[%ld:%ld]", lo, len);
+		elements *= len;
 		section = append(section, strdup(buf));
 	}
 	isl_set_free(accessed);
 
-	if (section && elements * size > PPCG_REDUCTION_MAX_BYTES) {
+	if (section &&
+	    elements * array->element_size > PPCG_REDUCTION_MAX_BYTES) {
 		free(section);
 		section = NULL;
 	}

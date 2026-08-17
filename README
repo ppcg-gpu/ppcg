@@ -170,9 +170,17 @@ The loop also stays sequential when the accumulator cannot be named:
   memory;
 - when the accumulator is a member of a structure, which pet gives an
   array of its own whose name the generated code does not declare;
+- when which elements are accumulated into depends on a value only
+  known at run time, as it does when the loop bound is a parameter,
+  since the section would have to be widened to cover every value that
+  parameter may take and the copies would be added back into elements
+  the program never meant to have;
 - when the elements accumulated into are not a constant range, or there
   are more than a megabyte of them, since every thread is given a copy
   of the whole section on its stack;
+- when the section would not be contiguous, which for an array of more
+  than one dimension means that the accumulation has to cover the whole
+  of every dimension but the outermost;
 - when the loop reaches the same array by any other access, since within
   the loop the array stands for the copy and that access would silently
   be redirected to it.
