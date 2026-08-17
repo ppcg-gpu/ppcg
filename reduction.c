@@ -65,65 +65,137 @@ static struct pet_array *find_array(struct ppcg_scop *scop, const char *name)
 	return NULL;
 }
 
-/* Is "type" the name of a type whose values are held as they are
- * written, so that adding two of them and storing the result changes
- * nothing else about it?
+/* The names of the types whose values these operators may be
+ * accumulated in.
+ *
+ * A compound assignment is x = (T) (x op y), so the value is put back
+ * into T at every step, and the result only fails to depend on the order
+ * when doing that keeps whatever the operator did.  Storing an integer
+ * in an integer keeps the low bits, which is all these operators work
+ * on.  Storing a floating point value in a floating point one rounds,
+ * which is the trade a reduction makes anyway.  Anything else, and in
+ * particular storing a floating point value in an integer or storing
+ * anything at all in a _Bool, throws away more than that.
+ *
+ * The types are listed by name because that is all the scop says about
+ * them.  A type reached through a typedef of the user's own is not
+ * listed, so an accumulation in one stays sequential; the alternative
+ * would be to guess from the spelling, and "enum floaty" would then pass
+ * for a floating point type.
  */
-static int type_is_floating(const char *type)
-{
-	if (!type || strchr(type, '*'))
-		return 0;
+static const char *integer_types[] = {
+	"char", "signed char", "unsigned char",
+	"short", "short int", "signed short", "signed short int",
+	"unsigned short", "unsigned short int",
+	"int", "signed", "signed int", "unsigned", "unsigned int",
+	"long", "long int", "signed long", "signed long int",
+	"unsigned long", "unsigned long int",
+	"long long", "long long int", "signed long long",
+	"signed long long int",
+	"unsigned long long", "unsigned long long int",
+	"int8_t", "int16_t", "int32_t", "int64_t",
+	"uint8_t", "uint16_t", "uint32_t", "uint64_t",
+	"intmax_t", "uintmax_t", "intptr_t", "uintptr_t",
+	"ptrdiff_t", "size_t", "ssize_t",
+};
 
-	return strstr(type, "float") != NULL || strstr(type, "double") != NULL;
+static const char *floating_types[] = {
+	"float", "double", "long double",
+	"_Float16", "_Float32", "_Float64", "_Float128",
+	"__float128", "__bf16",
+};
+
+/* "type" without the qualifiers that say nothing about what it holds.
+ */
+static const char *unqualified(const char *type)
+{
+	static const char *qualifiers[] = { "const ", "volatile ", "_Atomic " };
+	int again = 1;
+
+	if (!type)
+		return NULL;
+
+	while (again) {
+		size_t i;
+
+		again = 0;
+		for (i = 0; i < sizeof(qualifiers) / sizeof(*qualifiers); ++i) {
+			size_t len = strlen(qualifiers[i]);
+
+			if (!strncmp(type, qualifiers[i], len)) {
+				type += len;
+				again = 1;
+			}
+		}
+	}
+
+	return type;
 }
 
-/* Is "type" the name of the boolean type?
- *
- * Storing a value in one turns everything that is not zero into one,
- * which is the one conversion below that throws away more than the high
- * bits.
- */
-static int type_is_boolean(const char *type)
+static int type_is_one_of(const char *type, const char **names, size_t n)
 {
+	size_t i;
+
+	type = unqualified(type);
 	if (!type)
 		return 0;
 
-	return !strcmp(type, "_Bool") || !strcmp(type, "bool");
+	for (i = 0; i < n; ++i)
+		if (!strcmp(type, names[i]))
+			return 1;
+
+	return 0;
 }
 
-/* Is any value "expr" works out a floating point one?
+static int type_is_integer(const char *type)
+{
+	return type_is_one_of(type, integer_types,
+			sizeof(integer_types) / sizeof(*integer_types));
+}
+
+static int type_is_floating(const char *type)
+{
+	return type_is_one_of(type, floating_types,
+			sizeof(floating_types) / sizeof(*floating_types));
+}
+
+/* Is every value "expr" works out an integer one?
  *
- * A call is taken to be, since nothing here knows what it returns.
+ * A call is not taken to be, since nothing here knows what it returns,
+ * and neither is an access to an array of a type that is not listed,
+ * which includes a member of a structure: the scop names such an access
+ * after the structure, whose type says nothing about the member.
  */
-static int expr_is_floating(struct ppcg_scop *scop, __isl_keep pet_expr *expr)
+static int expr_is_integer(struct ppcg_scop *scop, __isl_keep pet_expr *expr)
 {
 	struct pet_array *array;
 	isl_id *id;
-	int i, n, found = 0;
+	int i, n, all = 1;
 
 	switch (pet_expr_get_type(expr)) {
+	case pet_expr_int:
+		return 1;
 	case pet_expr_double:
-		return 1;
 	case pet_expr_call:
-		return 1;
+		return 0;
 	case pet_expr_access:
 		id = pet_expr_access_get_id(expr);
 		array = find_array(scop, id ? isl_id_get_name(id) : NULL);
 		isl_id_free(id);
-		return array && type_is_floating(array->element_type);
+		return array && type_is_integer(array->element_type);
 	default:
 		break;
 	}
 
 	n = pet_expr_get_n_arg(expr);
-	for (i = 0; i < n && !found; ++i) {
+	for (i = 0; i < n && all; ++i) {
 		pet_expr *arg = pet_expr_get_arg(expr, i);
 
-		found = arg && expr_is_floating(scop, arg);
+		all = arg && expr_is_integer(scop, arg);
 		pet_expr_free(arg);
 	}
 
-	return found;
+	return all;
 }
 
 /* Do "a" and "b" access the same location?
@@ -198,13 +270,12 @@ static int accumulate_is_associative(struct ppcg_scop *scop,
 	array = find_array(scop, ppcg_reduction_name(red));
 	if (!array)
 		return 0;
-	if (type_is_boolean(array->element_type))
-		return 0;
-	if (!type_is_floating(array->element_type) &&
-	    expr_is_floating(scop, expr))
+	if (type_is_floating(array->element_type))
+		return 1;
+	if (!type_is_integer(array->element_type))
 		return 0;
 
-	return 1;
+	return expr_is_integer(scop, expr);
 }
 
 static int extract_reduction(struct ppcg_scop *scop,
@@ -590,7 +661,7 @@ static char *reduction_section(struct ppcg_scop *scop,
 {
 	struct pet_array *array;
 	isl_map *acc;
-	isl_union_map *other;
+	isl_union_map *other, *restricted;
 	isl_set *accessed;
 	char *section;
 	long elements = 1;
@@ -619,21 +690,26 @@ static char *reduction_section(struct ppcg_scop *scop,
 	isl_union_map_free(other);
 
 	/* Only what this loop runs, so that the section does not name
-	 * elements another loop reaches.  The elements have to follow
-	 * from the iterations alone: when a parameter has a say in which
-	 * of them are accumulated into, the range isl can give covers
-	 * every value that parameter may take, which is more elements
-	 * than the program has.
+	 * elements another loop reaches.  The loop may run more than one
+	 * statement, so the iterations of this one are picked out rather
+	 * than the whole of what it runs being taken for a set of its
+	 * own.
+	 *
+	 * The elements have to follow from the iterations alone: when a
+	 * parameter has a say in which of them are accumulated into, the
+	 * range isl can give covers every value that parameter may take,
+	 * which is more elements than the program has.
 	 */
-	acc = isl_map_intersect_domain(acc,
-			isl_set_from_union_set(isl_union_set_copy(domain)));
-	if (isl_map_involves_dims(acc, isl_dim_param, 0,
-				isl_map_dim(acc, isl_dim_param))) {
-		isl_map_free(acc);
+	restricted = isl_union_map_intersect_domain(
+			isl_union_map_from_map(acc),
+			isl_union_set_copy(domain));
+	if (isl_union_map_involves_dims(restricted, isl_dim_param, 0,
+				isl_union_map_dim(restricted, isl_dim_param))) {
+		isl_union_map_free(restricted);
 		return NULL;
 	}
 
-	accessed = isl_map_range(acc);
+	accessed = isl_set_from_union_set(isl_union_map_range(restricted));
 	n = isl_set_dim(accessed, isl_dim_set);
 
 	section = strdup("");
