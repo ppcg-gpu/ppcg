@@ -18,6 +18,9 @@
 /* Is "op" an operator whose repeated application gives a result that does
  * not depend on the order of the operands?
  *
+ * Whether it does depends on the accumulator as much as on the operator,
+ * which is why accumulate_is_associative below has the last word.
+ *
  * Division and subtraction are compound assignments too, but x -= a
  * followed by x -= b is not the same as applying them the other way
  * round unless the accumulator is treated as a sum of negated terms,
@@ -40,6 +43,87 @@ static int op_is_associative(enum pet_op_type op)
 	default:
 		return 0;
 	}
+}
+
+/* The array of "scop" that is named "name", or NULL when there is none.
+ */
+static struct pet_array *find_array(struct ppcg_scop *scop, const char *name)
+{
+	int i;
+
+	if (!name)
+		return NULL;
+
+	for (i = 0; i < scop->pet->n_array; ++i) {
+		const char *array;
+
+		array = isl_set_get_tuple_name(scop->pet->arrays[i]->extent);
+		if (array && !strcmp(array, name))
+			return scop->pet->arrays[i];
+	}
+
+	return NULL;
+}
+
+/* Is "type" the name of a type whose values are held as they are
+ * written, so that adding two of them and storing the result changes
+ * nothing else about it?
+ */
+static int type_is_floating(const char *type)
+{
+	if (!type || strchr(type, '*'))
+		return 0;
+
+	return strstr(type, "float") != NULL || strstr(type, "double") != NULL;
+}
+
+/* Is "type" the name of the boolean type?
+ *
+ * Storing a value in one turns everything that is not zero into one,
+ * which is the one conversion below that throws away more than the high
+ * bits.
+ */
+static int type_is_boolean(const char *type)
+{
+	if (!type)
+		return 0;
+
+	return !strcmp(type, "_Bool") || !strcmp(type, "bool");
+}
+
+/* Is any value "expr" works out a floating point one?
+ *
+ * A call is taken to be, since nothing here knows what it returns.
+ */
+static int expr_is_floating(struct ppcg_scop *scop, __isl_keep pet_expr *expr)
+{
+	struct pet_array *array;
+	isl_id *id;
+	int i, n, found = 0;
+
+	switch (pet_expr_get_type(expr)) {
+	case pet_expr_double:
+		return 1;
+	case pet_expr_call:
+		return 1;
+	case pet_expr_access:
+		id = pet_expr_access_get_id(expr);
+		array = find_array(scop, id ? isl_id_get_name(id) : NULL);
+		isl_id_free(id);
+		return array && type_is_floating(array->element_type);
+	default:
+		break;
+	}
+
+	n = pet_expr_get_n_arg(expr);
+	for (i = 0; i < n && !found; ++i) {
+		pet_expr *arg = pet_expr_get_arg(expr, i);
+
+		found = arg && expr_is_floating(scop, arg);
+		pet_expr_free(arg);
+	}
+
+	return found;
 }
 
 /* Do "a" and "b" access the same location?
@@ -82,9 +166,49 @@ static void reduction_clear(struct ppcg_reduction *red)
  * name is not one the generated code declares, so it could not be put in
  * a clause.  Such an access is the one whose index expression has a
  * wrapped range, the structure on one side and the field on the other.
+ *
+ * The type of the accumulator has the last word.  A compound assignment
+ * is
+ *
+ *	x = (T) (x op y)
+ *
+ * so the value is put back into T at every step, and the result only
+ * fails to depend on the order when doing that keeps whatever the
+ * operator did.  Storing an integer in a narrower integer keeps the low
+ * bits, and the operators here work on those bits alone, so that is
+ * safe.  Two things are not:
+ *
+ * - a boolean accumulator, where storing turns everything that is not
+ *   zero into one.  A thread starting from the identity of the operator
+ *   rather than from what the loop has accumulated so far arrives
+ *   somewhere else: 64 iterations of s ^= 3 leave a _Bool s at 1, while
+ *   the same loop run in parallel leaves it at 0.
+ *
+ * - an integer accumulator with a floating point operand, where storing
+ *   throws away the fraction.  Where the loop is divided then decides
+ *   how many times that happens: a thousand iterations of s += a[i] with
+ *   a[i] alternating between 3.0 and -0.7 leave an int s at 1000 when
+ *   run in order and at 1020 when run by 48 threads.
  */
-static int extract_reduction(__isl_keep pet_expr *expr, int stmt,
-	struct ppcg_reduction *red)
+static int accumulate_is_associative(struct ppcg_scop *scop,
+	__isl_keep pet_expr *expr, struct ppcg_reduction *red)
+{
+	struct pet_array *array;
+
+	array = find_array(scop, ppcg_reduction_name(red));
+	if (!array)
+		return 0;
+	if (type_is_boolean(array->element_type))
+		return 0;
+	if (!type_is_floating(array->element_type) &&
+	    expr_is_floating(scop, expr))
+		return 0;
+
+	return 1;
+}
+
+static int extract_reduction(struct ppcg_scop *scop,
+	__isl_keep pet_expr *expr, int stmt, struct ppcg_reduction *red)
 {
 	enum pet_op_type op;
 	pet_expr *arg;
@@ -120,9 +244,11 @@ static int extract_reduction(__isl_keep pet_expr *expr, int stmt,
 		space = isl_space_range(isl_multi_pw_aff_get_space(red->index));
 		ok = isl_space_is_wrapping(space) != isl_bool_true;
 		isl_space_free(space);
-		if (!ok)
-			reduction_clear(red);
 	}
+	if (ok)
+		ok = accumulate_is_associative(scop, expr, red);
+	if (!ok)
+		reduction_clear(red);
 	pet_expr_free(arg);
 
 	return ok;
@@ -212,8 +338,8 @@ static int only_accumulates(__isl_keep pet_tree *tree,
  * such an if together with what it guards in a single statement, so the
  * condition is looked through.
  */
-static int find_in_tree(__isl_keep pet_tree *tree, int pos,
-	struct ppcg_reduction *red)
+static int find_in_tree(struct ppcg_scop *scop, __isl_keep pet_tree *tree,
+	int pos, struct ppcg_reduction *red)
 {
 	pet_expr *expr;
 	pet_tree *then;
@@ -224,14 +350,14 @@ static int find_in_tree(__isl_keep pet_tree *tree, int pos,
 		expr = pet_tree_expr_get_expr(tree);
 		if (!expr)
 			return 0;
-		found = extract_reduction(expr, pos, red);
+		found = extract_reduction(scop, expr, pos, red);
 		pet_expr_free(expr);
 		return found;
 	case pet_tree_if:
 		then = pet_tree_if_get_then(tree);
 		if (!then)
 			return 0;
-		found = find_in_tree(then, pos, red);
+		found = find_in_tree(scop, then, pos, red);
 		pet_tree_free(then);
 		return found;
 	default:
@@ -245,10 +371,10 @@ static int find_in_tree(__isl_keep pet_tree *tree, int pos,
  * so what was found is checked against the accesses of the whole
  * statement before it is accepted.
  */
-static int find_in_stmt(struct pet_stmt *stmt, int pos,
-	struct ppcg_reduction *red)
+static int find_in_stmt(struct ppcg_scop *scop, struct pet_stmt *stmt,
+	int pos, struct ppcg_reduction *red)
 {
-	if (!find_in_tree(stmt->body, pos, red))
+	if (!find_in_tree(scop, stmt->body, pos, red))
 		return 0;
 	if (only_accumulates(stmt->body, red))
 		return 1;
@@ -278,7 +404,7 @@ struct ppcg_reductions *ppcg_find_reductions(struct ppcg_scop *scop)
 	for (i = 0; i < scop->pet->n_stmt; ++i) {
 		struct ppcg_reduction red = { 0 };
 
-		if (!find_in_stmt(scop->pet->stmts[i], i, &red))
+		if (!find_in_stmt(scop, scop->pet->stmts[i], i, &red))
 			continue;
 		reductions->red[reductions->n++] = red;
 	}
@@ -396,22 +522,7 @@ static char *append(char *s, char *suffix)
 static struct pet_array *reduction_array(struct ppcg_scop *scop,
 	struct ppcg_reduction *red)
 {
-	const char *name;
-	int i;
-
-	name = ppcg_reduction_name(red);
-	if (!name)
-		return NULL;
-
-	for (i = 0; i < scop->pet->n_array; ++i) {
-		const char *array;
-
-		array = isl_set_get_tuple_name(scop->pet->arrays[i]->extent);
-		if (array && !strcmp(array, name))
-			return scop->pet->arrays[i];
-	}
-
-	return NULL;
+	return find_array(scop, ppcg_reduction_name(red));
 }
 
 /* Do the bounds of dimension "pos" of "set" have constant values, and if

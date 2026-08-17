@@ -277,6 +277,7 @@ add_reduction_run_test(sections FALSE)
 add_reduction_run_test(slice TRUE)
 add_reduction_run_test(parametric FALSE)
 add_reduction_run_test(pointers FALSE)
+add_reduction_run_test(narrowing FALSE)
 add_reduction_run_test(aliased TRUE)
 
 #--------------------------------------------------------------------

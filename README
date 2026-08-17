@@ -126,6 +126,14 @@ which are not in fact associative, so a sum computed this way may differ
 in its last digits from the one the original program computes.  That is
 the same trade every other compiler makes for a reduction.
 
+Whether the order matters depends on the accumulator as much as on the
+operator, since a compound assignment is x = (T)(x op y) and the value
+is put back into T at every step.  Storing an integer in a narrower
+integer keeps the low bits, which is all these operators work on, but
+storing anything in a _Bool turns everything that is not zero into one,
+and storing a floating point value in an integer throws away the
+fraction.  Neither of those is an accumulation.
+
 When the accumulator is an element of an array, the clause names a
 section of that array instead, since which element an iteration
 accumulates into is only known once the loop runs.  The section covers
