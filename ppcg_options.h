@@ -9,6 +9,9 @@ struct ppcg_debug_options {
 	int dump_schedule;
 	int dump_final_schedule;
 	int dump_sizes;
+	/* Print the accumulations found in each scop and generate nothing.
+	 */
+	int dump_reductions;
 	int verbose;
 };
 

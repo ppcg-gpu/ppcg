@@ -31,6 +31,7 @@
 #include <isl/schedule.h>
 #include <pet.h>
 #include "ppcg.h"
+#include "reduction.h"
 #include "ppcg_options.h"
 #include "cuda.h"
 #include "opencl.h"
@@ -1089,6 +1090,18 @@ static __isl_give isl_printer *transform(__isl_take isl_printer *p,
 
 	scop = pet_scop_align_params(scop);
 	ps = ppcg_scop_from_pet_scop(scop, data->options);
+
+	if (data->options->debug->dump_reductions) {
+		struct ppcg_reductions *reductions;
+
+		reductions = ppcg_find_reductions(ps);
+		ppcg_reductions_print(stdout, ps, reductions);
+		ppcg_reductions_free(reductions);
+		ppcg_scop_free(ps);
+		p = pet_scop_print_original(scop, p);
+		pet_scop_free(scop);
+		return p;
+	}
 
 	p = data->transform(p, ps, data->user);
 

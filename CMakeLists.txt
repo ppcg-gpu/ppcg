@@ -74,6 +74,7 @@ add_executable(ppcg
     schedule.c
     ppcg_options.c
     ppcg.c
+    reduction.c
     print.c
     util.c
     version.c
@@ -138,6 +139,29 @@ function(add_ppcg_program target source output_dir ppcg_options)
         C_EXTENSIONS ON
     )
 endfunction()
+
+#--------------------------------------------------------------------
+# Reduction detection
+#
+# An accumulation is what stands between a loop that reads like a
+# reduction and a loop that can be run in parallel, so which statements
+# are recognised as one is checked on its own, before anything is done
+# with them.
+#--------------------------------------------------------------------
+
+file(GLOB REDUCTION_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/reduction/*.c")
+foreach(source ${REDUCTION_FILES})
+    get_filename_component(base_name ${source} NAME_WE)
+    add_test(NAME Reduction_${base_name}
+        COMMAND ${CMAKE_COMMAND}
+            -DPPCG=$<TARGET_FILE:ppcg>
+            -DSOURCE=${source}
+            -DBINDIR=${CMAKE_CURRENT_BINARY_DIR}/tests/reduction/${base_name}
+            -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/reduction/${base_name}.reductions
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunReductionTest.cmake
+    )
+endforeach()
 
 #--------------------------------------------------------------------
 # C target tests
