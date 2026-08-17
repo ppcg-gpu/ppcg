@@ -165,6 +165,9 @@ static int type_is_floating(const char *type)
  * and neither is an access to an array of a type that is not listed,
  * which includes a member of a structure: the scop names such an access
  * after the structure, whose type says nothing about the member.
+ *
+ * A cast is what its own type says, whatever it casts: the value that
+ * reaches the accumulator is the one the cast worked out.
  */
 static int expr_is_integer(struct ppcg_scop *scop, __isl_keep pet_expr *expr)
 {
@@ -178,6 +181,8 @@ static int expr_is_integer(struct ppcg_scop *scop, __isl_keep pet_expr *expr)
 	case pet_expr_double:
 	case pet_expr_call:
 		return 0;
+	case pet_expr_cast:
+		return type_is_integer(pet_expr_cast_get_type_name(expr));
 	case pet_expr_access:
 		id = pet_expr_access_get_id(expr);
 		array = find_array(scop, id ? isl_id_get_name(id) : NULL);
