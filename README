@@ -139,12 +139,20 @@ h[i % B] += a[i], the accumulation is made atomic instead:
 When they do not, as in y[i] += A[i][j] * x[j] with the loop over i,
 nothing has to be done: each thread has its own y[i] already.
 
-Two restrictions apply.  The location accumulated into has to be one the
-scop can work out from the iteration, which rules out h[idx[i]] += a[i],
-where it is read from memory.  And the accumulation has to be the whole
-statement, so one written under a condition of its own is not recognised
-either.  In both cases the loop carrying the accumulation stays
-sequential.
+An accumulation written under a condition of its own,
+
+	if (a[i] > 0.0f)
+		sum += a[i];
+
+is one as well: the iterations that do accumulate may still be run in
+any order, and the ones that do not are no obstacle to that.  Unless the
+condition reads the accumulator, that is, since whether an iteration
+accumulates would then depend on how much has been accumulated so far.
+
+One restriction applies.  The location accumulated into has to be one
+the scop can work out from the iteration, which rules out
+h[idx[i]] += a[i], where it is read from memory.  The loop carrying such
+an accumulation stays sequential.
 
 The option --dump-reductions prints the accumulations that were found,
 one per line, which is a way to see why a loop did not become parallel.

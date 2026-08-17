@@ -254,6 +254,7 @@ endfunction()
 
 add_reduction_run_test(sum TRUE)
 add_reduction_run_test(chained TRUE)
+add_reduction_run_test(conditional TRUE)
 add_reduction_run_test(histogram FALSE)
 
 #--------------------------------------------------------------------

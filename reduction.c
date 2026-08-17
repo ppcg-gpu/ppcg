@@ -101,28 +101,108 @@ static int extract_reduction(__isl_keep pet_expr *expr, int stmt,
 	return ok;
 }
 
-/* Look for an accumulation in the body of statement "stmt".
+/* Release what "red" holds, leaving it as empty as it started out.
+ */
+static void reduction_clear(struct ppcg_reduction *red)
+{
+	isl_id_free(red->ref);
+	isl_multi_pw_aff_free(red->index);
+	red->ref = NULL;
+	red->index = NULL;
+}
+
+/* Does "expr" access the location identified by "user"?
  *
- * Only a statement that is a single expression can be one; anything
- * with control flow of its own has been broken up into separate
- * statements by the time the scop is built.
+ * Called on every access of an expression, and stops the walk by
+ * failing as soon as one of them is the one being looked for.
+ */
+static int is_same_access(__isl_keep pet_expr *expr, void *user)
+{
+	isl_id *wanted = user;
+	isl_id *id;
+	int same;
+
+	id = pet_expr_access_get_id(expr);
+	same = id == wanted;
+	isl_id_free(id);
+
+	return same ? -1 : 0;
+}
+
+/* Does "expr" read the location "red" accumulates into?
+ */
+static int touches_accumulator(__isl_keep pet_expr *expr,
+	struct ppcg_reduction *red)
+{
+	isl_id *id;
+	int touches;
+
+	id = isl_multi_pw_aff_get_tuple_id(red->index, isl_dim_out);
+	touches = pet_expr_foreach_access_expr(expr, &is_same_access, id) < 0;
+	isl_id_free(id);
+
+	return touches;
+}
+
+/* Look for an accumulation in "tree".
+ *
+ * An accumulation written under a condition of its own, as in
+ *
+ *	if (a[i] > 0)
+ *		sum += a[i];
+ *
+ * is still one: the iterations that do accumulate may be run in any
+ * order, and the ones that do not are no obstacle to that.  pet keeps
+ * such an if together with what it guards in a single statement, so the
+ * condition is looked through.
+ *
+ * Unless the condition reads the accumulator, that is.  Whether an
+ * iteration accumulates would then depend on how much has been
+ * accumulated so far, and the result would depend on the order after
+ * all.
+ */
+static int find_in_tree(__isl_keep pet_tree *tree, int pos,
+	struct ppcg_reduction *red)
+{
+	pet_expr *expr;
+	pet_tree *then;
+	int found;
+
+	switch (pet_tree_get_type(tree)) {
+	case pet_tree_expr:
+		expr = pet_tree_expr_get_expr(tree);
+		if (!expr)
+			return 0;
+		found = extract_reduction(expr, pos, red);
+		pet_expr_free(expr);
+		return found;
+	case pet_tree_if:
+		then = pet_tree_if_get_then(tree);
+		if (!then)
+			return 0;
+		found = find_in_tree(then, pos, red);
+		pet_tree_free(then);
+		if (!found)
+			return 0;
+		expr = pet_tree_if_get_cond(tree);
+		if (!expr || touches_accumulator(expr, red)) {
+			pet_expr_free(expr);
+			reduction_clear(red);
+			return 0;
+		}
+		pet_expr_free(expr);
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+/* Look for an accumulation in the body of statement "stmt".
  */
 static int find_in_stmt(struct pet_stmt *stmt, int pos,
 	struct ppcg_reduction *red)
 {
-	pet_expr *body;
-	int found;
-
-	if (pet_tree_get_type(stmt->body) != pet_tree_expr)
-		return 0;
-
-	body = pet_tree_expr_get_expr(stmt->body);
-	if (!body)
-		return 0;
-	found = extract_reduction(body, pos, red);
-	pet_expr_free(body);
-
-	return found;
+	return find_in_tree(stmt->body, pos, red);
 }
 
 struct ppcg_reductions *ppcg_find_reductions(struct ppcg_scop *scop)
@@ -159,10 +239,8 @@ void ppcg_reductions_free(struct ppcg_reductions *reductions)
 
 	if (!reductions)
 		return;
-	for (i = 0; i < reductions->n; ++i) {
-		isl_id_free(reductions->red[i].ref);
-		isl_multi_pw_aff_free(reductions->red[i].index);
-	}
+	for (i = 0; i < reductions->n; ++i)
+		reduction_clear(&reductions->red[i]);
 	free(reductions->red);
 	free(reductions);
 }
