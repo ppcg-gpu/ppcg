@@ -1,8 +1,12 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(ppcg VERSION 0.09.2 LANGUAGES C CXX)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+# Before project(), so that even the programs CMake compiles to find out
+# about the compiler go through the cache.
+include(Ccache)
+
+project(ppcg VERSION 0.09.2 LANGUAGES C CXX)
 
 # Without a build type CMake passes no optimisation flags at all, which
 # silently produces a compiler that is an order of magnitude slower than the

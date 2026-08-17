@@ -76,9 +76,9 @@ jobs:
     name: ppcg on LLVM ${{ matrix.llvm }}
     needs: llvm-matrix
     runs-on: ubuntu-22.04
-    # Configuring alone is minutes: clang_feature_tests runs 59 sequential
-    # try_compile probes against the clang headers, which takes 215 s on an
-    # 88 core workstation and considerably longer here.
+    # Configuring asks clang about 59 features, which is most of what a
+    # cold build costs; the probes are compiled in one parallel batch and
+    # go through ccache, so a warm cache makes it seconds.
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -124,8 +124,6 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/prefix" \
               -DPET_FORCE_LLVM_VERSION="${LLVM_FULL}" \
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               2>&1 | tee configure.log
 
       - name: Build
@@ -248,8 +246,6 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/prefix" \
               "${args[@]}" \
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               2>&1 | tee configure.log
 
       - name: Build
@@ -331,8 +327,6 @@ jobs:
           cmake -S . -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DPET_FORCE_LLVM_VERSION="${LLVM_FULL}" \
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               2>&1 | tee configure.log
           # Silence about OpenCL here would mean the extra tests were never
           # configured and this job proved nothing.

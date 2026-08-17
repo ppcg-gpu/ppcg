@@ -309,13 +309,16 @@ static char *reduction_clause(__isl_keep isl_ast_build *build,
 		need = len + strlen(" reduction(:)") + strlen(op) +
 			strlen(name) + 1;
 		grown = realloc(clause, need);
-		if (grown)
+		if (grown) {
 			len += sprintf(grown + len, " reduction(%s:%s)", op,
 					name);
-		else
+			clause = grown;
+		} else {
+			free(clause);
+			clause = NULL;
 			*ok = 0;
+		}
 		free(name);
-		clause = grown;
 		if (!*ok)
 			break;
 	}
