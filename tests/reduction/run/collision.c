@@ -1,29 +1,46 @@
 #define N 1000
 
-struct pair { double v; };
+struct value { double v; };
+struct count { int v; };
+struct holder { struct count b[4]; };
 
-struct pair a;
-int a_v;
-
-/* An accumulator whose name pet has already given to something else.
+/* Accumulators whose name pet has already given to something else.
  *
  * A member of a structure gets an array of its own, named after the
- * structure and the member together, so a.v is an array called a_v.  A
- * program may have a variable of that name as well, and then the two
- * are only told apart by the shape of what they name: the one made for
- * the member reaches the member through the structure, while the
- * variable reaches itself.
+ * structure and the member together, and a member of a member is named
+ * the same way, so all of
  *
- * Told apart by name alone, this accumulation is taken for one into a
- * double.  An int accumulated from an array of double is not an
- * accumulation, since the fraction is thrown away at every step, so the
- * loop has to stay sequential.
+ *	a.v		gives an array called a_v
+ *	q.b[i].v	gives an array called q_b_v
+ *	q_b[i].v	gives an array called q_b_v as well
+ *
+ * can collide with a variable, or with each other.  What tells them
+ * apart is how each reaches what it names: a_v the variable reaches
+ * itself, a.v reaches a member through a structure, q.b[i].v reaches a
+ * member through a structure that is itself a member, and q_b[i].v
+ * reaches a member through a structure that is not.
+ *
+ * Told apart by name alone, these accumulations are taken for ones into
+ * a double.  An int accumulated from doubles is not an accumulation,
+ * since the fraction is thrown away at every step, so none of these
+ * loops may be marked parallel.
  */
+struct value a;
+int a_v;
+
+struct holder q;
+struct value q_b[4];
+int reached;
+int total;
+
 void collision(double b[N])
 {
 #pragma scop
 	a.v = 1.0;
 	for (int i = 0; i < N; ++i)
 		a_v += b[i];
+	reached = q.b[0].v;
+	for (int i = 0; i < 4; ++i)
+		total += q_b[i].v;
 #pragma endscop
 }

@@ -86,28 +86,25 @@ static __isl_give isl_space *access_array_space(__isl_keep pet_expr *expr)
  *
  * The name is not enough to tell one array from another.  pet gives a
  * member of a structure an array of its own, named after the structure
- * and the member together, and a program is free to have a variable of
- * that name as well: a.v and a_v both give an array called a_v.  What
- * tells them apart is the shape of the space, since the one made for
- * the member is a wrapped relation from the structure to the member.
+ * and the member together, and it writes a member of a member the same
+ * way, so a.b[i].v and a_b[i].v both give an array called a_b_v.  What
+ * tells those apart is how each of them reaches the member: one goes
+ * through a structure that is itself a member, the other through a
+ * structure that is not, and the space says so, since it is a wrapped
+ * relation whose own domain is wrapped in the first case only.
+ *
+ * The whole of the space is therefore compared, nesting and all, which
+ * is what isl_space_has_equal_tuples does.
  */
 static int extent_matches(__isl_keep isl_set *extent,
 	__isl_keep isl_space *space)
 {
 	isl_space *extent_space;
-	const char *extent_name, *name;
 	int match;
 
 	extent_space = isl_set_get_space(extent);
-	extent_name = isl_space_get_tuple_name(extent_space, isl_dim_set);
-	name = isl_space_get_tuple_name(space, isl_dim_out);
-
-	match = extent_name && name && !strcmp(extent_name, name) &&
-		isl_space_is_wrapping(extent_space) ==
-			isl_space_is_wrapping(space) &&
-		isl_space_dim(extent_space, isl_dim_set) ==
-			isl_space_dim(space, isl_dim_out);
-
+	match = isl_space_has_equal_tuples(extent_space, space) ==
+		isl_bool_true;
 	isl_space_free(extent_space);
 
 	return match;

@@ -2,10 +2,16 @@
 
 #define N 1000
 
-struct pair { double v; };
+struct value { double v; };
+struct count { int v; };
+struct holder { struct count b[4]; };
 
-extern struct pair a;
+extern struct value a;
 extern int a_v;
+extern struct holder q;
+extern struct value q_b[4];
+extern int reached;
+extern int total;
 
 void collision(double b[N]);
 
@@ -19,10 +25,14 @@ int main(void)
 
 	for (i = 0; i < N; ++i)
 		b[i] = (i % 2) ? -0.7 : 3.0;
+	for (i = 0; i < 4; ++i)
+		q_b[i].v = (i % 2) ? -0.7 : 3.0;
+	q.b[0].v = 1;
 	a_v = 0;
+	total = 0;
 
 	collision(b);
-	printf("%d %g\n", a_v, a.v);
+	printf("%d %g %d %d\n", a_v, a.v, reached, total);
 
 	return 0;
 }
