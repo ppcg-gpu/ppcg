@@ -45,6 +45,31 @@ static int op_is_associative(enum pet_op_type op)
 	}
 }
 
+/* The array "expr" accesses, or NULL when it accesses no array.
+ *
+ * pet writes a value that is an integer, such as the value of a loop
+ * iterator, as an access to a space with no name, so asking such an
+ * access which array it belongs to is an error rather than a question
+ * with an empty answer.
+ */
+static __isl_give isl_id *access_array_id(__isl_keep pet_expr *expr)
+{
+	isl_multi_pw_aff *index;
+	isl_space *space;
+	isl_id *id = NULL;
+
+	index = pet_expr_access_get_index(expr);
+	if (!index)
+		return NULL;
+	space = isl_multi_pw_aff_get_space(index);
+	if (isl_space_has_tuple_id(space, isl_dim_out) == isl_bool_true)
+		id = isl_space_get_tuple_id(space, isl_dim_out);
+	isl_space_free(space);
+	isl_multi_pw_aff_free(index);
+
+	return id;
+}
+
 /* The array of "scop" that is named "name", or NULL when there is none.
  */
 static struct pet_array *find_array(struct ppcg_scop *scop, const char *name)
@@ -162,9 +187,9 @@ static int type_is_floating(const char *type)
 /* Is every value "expr" works out an integer one?
  *
  * A call is not taken to be, since nothing here knows what it returns,
- * and neither is an access to an array of a type that is not listed,
- * which includes a member of a structure: the scop names such an access
- * after the structure, whose type says nothing about the member.
+ * and neither is an access to an array of a type that is not listed.
+ * An access to no array at all is: that is how pet writes a value that
+ * is an integer, such as the value of a loop iterator.
  *
  * A cast is what its own type says, whatever it casts: the value that
  * reaches the accumulator is the one the cast worked out.
@@ -184,8 +209,10 @@ static int expr_is_integer(struct ppcg_scop *scop, __isl_keep pet_expr *expr)
 	case pet_expr_cast:
 		return type_is_integer(pet_expr_cast_get_type_name(expr));
 	case pet_expr_access:
-		id = pet_expr_access_get_id(expr);
-		array = find_array(scop, id ? isl_id_get_name(id) : NULL);
+		id = access_array_id(expr);
+		if (!id)
+			return 1;
+		array = find_array(scop, isl_id_get_name(id));
 		isl_id_free(id);
 		return array && type_is_integer(array->element_type);
 	default:
@@ -347,8 +374,8 @@ static int count_access(__isl_keep pet_expr *expr, void *user)
 	struct reduction_accesses *count = user;
 	isl_id *id;
 
-	id = pet_expr_access_get_id(expr);
-	if (id == count->array)
+	id = access_array_id(expr);
+	if (id && id == count->array)
 		count->on_accumulator++;
 	isl_id_free(id);
 

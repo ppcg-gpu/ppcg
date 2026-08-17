@@ -280,6 +280,7 @@ add_reduction_run_test(pointers FALSE)
 add_reduction_run_test(narrowing FALSE)
 add_reduction_run_test(fused FALSE)
 add_reduction_run_test(casts FALSE)
+add_reduction_run_test(iterator TRUE)
 add_reduction_run_test(aliased TRUE)
 
 #--------------------------------------------------------------------

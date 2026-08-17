@@ -114,8 +114,9 @@ struct ppcg_scop {
 	 */
 	struct ppcg_reductions *reductions;
 	/* The dependences the accumulations carry among their own
-	 * iterations.  They are kept out of what constrains the schedule
-	 * and left in everywhere else.
+	 * iterations.  They are left in everywhere but the test that asks
+	 * whether a loop of the generated code can be run in parallel,
+	 * which is the one place they do not have to be obeyed.
 	 */
 	isl_union_map *reduction_deps;
 
