@@ -272,6 +272,11 @@ static __isl_give isl_union_set *ast_build_domain(
  * "*ok" is set to 0.  The loop then may not be run in parallel, since
  * what made it look parallel was leaving out the dependences that order
  * the accumulation, and only the clause makes up for that.
+ *
+ * The same happens when the loop would name more than a thread's stack
+ * holds.  Every thread is given a copy of everything named, all of it
+ * at once, so what has to stay within the budget is the whole of the
+ * clause rather than each accumulator of it.
  */
 static char *reduction_clause(__isl_keep isl_ast_build *build,
 	struct ast_build_userinfo *build_info, int *ok)
@@ -280,6 +285,7 @@ static char *reduction_clause(__isl_keep isl_ast_build *build,
 	isl_union_set *domain = NULL;
 	char *clause = NULL;
 	size_t len = 0;
+	long total = 0;
 	int i;
 
 	*ok = 1;
@@ -291,6 +297,7 @@ static char *reduction_clause(__isl_keep isl_ast_build *build,
 		const char *op;
 		char *name;
 		size_t need;
+		long bytes;
 		char *grown;
 
 		if (dim_is_coincident(build, build_info,
@@ -299,8 +306,15 @@ static char *reduction_clause(__isl_keep isl_ast_build *build,
 
 		if (!domain)
 			domain = ast_build_domain(build, build_info);
-		name = ppcg_reduction_clause_name(scop, red, domain);
+		name = ppcg_reduction_clause_name(scop, red, domain, &bytes);
 		if (!name) {
+			*ok = 0;
+			break;
+		}
+
+		total += bytes;
+		if (total > PPCG_REDUCTION_MAX_BYTES) {
+			free(name);
 			*ok = 0;
 			break;
 		}

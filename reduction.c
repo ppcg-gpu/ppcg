@@ -695,15 +695,6 @@ static int constant_range(__isl_keep isl_set *set, int pos, long *lo,
 	return ok;
 }
 
-/* Every thread is given a copy of the whole of the section, and the
- * copy is placed on that thread's stack, so a section of the size of a
- * stack crashes the generated program rather than speeding it up.  A
- * megabyte is an order of magnitude below the eight the default thread
- * stack has, and a section of that size still leaves the loop several
- * times faster than running it sequentially.
- */
-#define PPCG_REDUCTION_MAX_BYTES	(1024 * 1024)
-
 /* The section of the accumulator of "red" that the iterations in
  * "domain" accumulate into, as it is written in an OpenMP reduction
  * clause, or NULL when there is no such section to write.
@@ -726,14 +717,16 @@ static int constant_range(__isl_keep isl_set *set, int pos, long *lo,
  *   parameter may take, and the copies would be added back into elements
  *   the program never meant to have: h[i % 16] += a[i] with i below a
  *   parameter n reaches past the end of an h of n elements;
- * - the elements are not a constant range, or there are too many of
- *   them;
+ * - the elements are not a constant range.  How many of them there are
+ *   is reported through "bytes", for the caller to weigh against
+ *   everything else the loop asks a thread to hold;
  * - the section would not be contiguous.  A section of an array of more
  *   than one dimension only is when it covers the whole of every
  *   dimension but the outermost.
  */
 static char *reduction_section(struct ppcg_scop *scop,
-	struct ppcg_reduction *red, __isl_keep isl_union_set *domain)
+	struct ppcg_reduction *red, __isl_keep isl_union_set *domain,
+	long *bytes)
 {
 	struct pet_array *array;
 	isl_map *acc;
@@ -811,17 +804,15 @@ static char *reduction_section(struct ppcg_scop *scop,
 	}
 	isl_set_free(accessed);
 
-	if (section &&
-	    elements * array->element_size > PPCG_REDUCTION_MAX_BYTES) {
-		free(section);
-		section = NULL;
-	}
+	if (section)
+		*bytes = elements * array->element_size;
 
 	return section;
 }
 
 char *ppcg_reduction_clause_name(struct ppcg_scop *scop,
-	struct ppcg_reduction *red, __isl_keep isl_union_set *domain)
+	struct ppcg_reduction *red, __isl_keep isl_union_set *domain,
+	long *bytes)
 {
 	struct pet_array *array;
 	const char *name;
@@ -849,10 +840,11 @@ char *ppcg_reduction_clause_name(struct ppcg_scop *scop,
 	    isl_set_dim(array->extent, isl_dim_set))
 		return NULL;
 
+	*bytes = array->element_size;
 	if (ppcg_reduction_is_scalar(red))
 		return strdup(name);
 
-	section = reduction_section(scop, red, domain);
+	section = reduction_section(scop, red, domain, bytes);
 	if (!section)
 		return NULL;
 

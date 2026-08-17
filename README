@@ -191,9 +191,12 @@ The loop also stays sequential when the accumulator cannot be named:
   since the section would have to be widened to cover every value that
   parameter may take and the copies would be added back into elements
   the program never meant to have;
-- when the elements accumulated into are not a constant range, or there
-  are more than a megabyte of them, since every thread is given a copy
-  of the whole section on its stack;
+- when the elements accumulated into are not a constant range, or the
+  loop would name more than a megabyte of them all told, since every
+  thread is given a copy of everything named and the copies go on its
+  stack.  The whole of a loop is weighed against that, not each
+  accumulator of it: eight accumulators of a megabyte apiece are eight
+  megabytes on the stack of every thread, which is a stack;
 - when the section would not be contiguous, which for an array of more
   than one dimension means that the accumulation has to cover the whole
   of every dimension but the outermost;

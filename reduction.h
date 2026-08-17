@@ -67,10 +67,24 @@ const char *ppcg_reduction_name(struct ppcg_reduction *red);
 /* The operator of "red", as it is written in an OpenMP clause. */
 const char *ppcg_reduction_op_str(struct ppcg_reduction *red);
 
+/* Every thread is given a copy of everything the clause of its loop
+ * names, and the copies are placed on that thread's stack, so a loop
+ * that names as much as a stack holds crashes the generated program
+ * rather than speeding it up.  A megabyte is an order of magnitude
+ * below the eight the default thread stack has, and a loop allowed that
+ * much is still left several times faster than running it sequentially.
+ *
+ * The whole of a loop is weighed against this, not one accumulator of
+ * it: eight accumulators of a megabyte apiece are eight megabytes on
+ * the stack of every thread, which is a stack.
+ */
+#define PPCG_REDUCTION_MAX_BYTES	(1024 * 1024)
+
 /* How the accumulator of "red" is written in the reduction clause of a
  * loop that runs the iterations in "domain", or NULL when it cannot be
  * written in one at all, in which case that loop may not be run in
- * parallel.  The caller frees the result.
+ * parallel.  The caller frees the result, and is told through "bytes"
+ * how much of a thread's stack naming it costs.
  *
  * A single location is named on its own.  An element of an array is
  * named through a section covering every element the loop accumulates
@@ -78,7 +92,8 @@ const char *ppcg_reduction_op_str(struct ppcg_reduction *red);
  * once the loop runs.
  */
 char *ppcg_reduction_clause_name(struct ppcg_scop *scop,
-	struct ppcg_reduction *red, __isl_keep isl_union_set *domain);
+	struct ppcg_reduction *red, __isl_keep isl_union_set *domain,
+	long *bytes);
 
 /* The pairs of iterations of "red" that accumulate into the same
  * location.  A loop only has to name the accumulator in a clause if it
