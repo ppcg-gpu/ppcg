@@ -185,7 +185,11 @@ set(REDUCTION_RUN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests/reduction/run")
 # The corpus is a pair of files: base_name.c holds the scop and is also
 # the reference implementation, base_name_main.c drives it and prints
 # what it computed.
-function(add_reduction_run_test base_name)
+#
+# "tolerant" says whether the answer may differ in its last digits, which
+# it does when the partial results of a floating point accumulation are
+# put back together in a different order.
+function(add_reduction_run_test base_name tolerant)
     set(source ${REDUCTION_RUN_DIR}/${base_name}.c)
     set(main ${REDUCTION_RUN_DIR}/${base_name}_main.c)
     set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/tests/reduction/run/${base_name}")
@@ -222,12 +226,12 @@ function(add_reduction_run_test base_name)
     # wrongly tends to show up at the boundaries rather than in the
     # middle.
     #
-    # The comparison is a tolerant one: the partial results are put back
-    # together in a different order than the sequential program computes
-    # them in, and floating point addition is not associative.  That is
-    # the trade every compiler makes for a reduction; what would not be
-    # tolerable, and what this test is looking for, is a lost update,
-    # which is off by whole terms.
+    # A tolerant comparison is one that allows the last digits to differ:
+    # the partial results are put back together in a different order than
+    # the sequential program computes them in, and floating point
+    # addition is not associative.  That is the trade every compiler
+    # makes for a reduction; what would not be tolerable, and what this
+    # test is looking for, is a lost update, which is off by whole terms.
     foreach(threads 8 3)
         # A directory of its own for each thread count, because the two
         # tests may be run at the same time and the driver names the
@@ -240,7 +244,7 @@ function(add_reduction_run_test base_name)
                 -DCANDIDATE=$<TARGET_FILE:${candidate}>
                 -DOUTPUT_DIR=${threads_dir}
                 "-DCOMPARE=${Python3_EXECUTABLE}|${COMPARE_OUTPUTS}"
-                -DCOMPARE_ARGS=TRUE
+                -DCOMPARE_ARGS=${tolerant}
                 -P ${RUN_AND_COMPARE}
         )
         set_tests_properties(Reduction_run_${base_name}_${threads} PROPERTIES
@@ -248,8 +252,9 @@ function(add_reduction_run_test base_name)
     endforeach()
 endfunction()
 
-add_reduction_run_test(sum)
-add_reduction_run_test(chained)
+add_reduction_run_test(sum TRUE)
+add_reduction_run_test(chained TRUE)
+add_reduction_run_test(histogram FALSE)
 
 #--------------------------------------------------------------------
 # C target tests

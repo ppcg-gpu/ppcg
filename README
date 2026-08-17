@@ -126,12 +126,25 @@ which are not in fact associative, so a sum computed this way may differ
 in its last digits from the one the original program computes.  That is
 the same trade every other compiler makes for a reduction.
 
-Two restrictions apply.  The accumulator has to be a scalar, because
-that is what an OpenMP reduction clause can name; an accumulation into
-an element of an array, such as y[i] += A[i][j] * x[j], is left alone
-and the loop carrying it stays sequential.  And the accumulation has to
-be the whole statement, so one written under a condition of its own is
-not recognised either.
+An accumulator that is an element of an array cannot be named in a
+clause, since which element it is may only be known once the loop runs.
+When the threads of the loop share such an element, as they do in
+h[i % B] += a[i], the accumulation is made atomic instead:
+
+	#pragma omp parallel for
+	for (int c0 = 0; c0 <= 4095; c0 += 1)
+	  #pragma omp atomic
+	  h[c0 % 16] += a[c0];
+
+When they do not, as in y[i] += A[i][j] * x[j] with the loop over i,
+nothing has to be done: each thread has its own y[i] already.
+
+Two restrictions apply.  The location accumulated into has to be one the
+scop can work out from the iteration, which rules out h[idx[i]] += a[i],
+where it is read from memory.  And the accumulation has to be the whole
+statement, so one written under a condition of its own is not recognised
+either.  In both cases the loop carrying the accumulation stays
+sequential.
 
 The option --dump-reductions prints the accumulations that were found,
 one per line, which is a way to see why a loop did not become parallel.

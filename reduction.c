@@ -224,15 +224,40 @@ const char *ppcg_reduction_op_str(struct ppcg_reduction *red)
 	return op_str(red->op);
 }
 
+/* The accesses to the accumulator of "red", as a relation from the
+ * iterations of the statement that performs it to the location it
+ * accumulates into.
+ */
+static __isl_give isl_map *reduction_access(struct ppcg_reduction *red)
+{
+	return isl_map_from_multi_pw_aff(isl_multi_pw_aff_copy(red->index));
+}
+
 /* The iterations of the statement that performs "red".
  */
-__isl_give isl_union_set *ppcg_reduction_domain(struct ppcg_reduction *red)
+static __isl_give isl_union_set *reduction_domain(struct ppcg_reduction *red)
 {
-	isl_map *map;
+	return isl_union_set_from_set(isl_map_domain(reduction_access(red)));
+}
 
-	map = isl_map_from_multi_pw_aff(isl_multi_pw_aff_copy(red->index));
+/* The pairs of iterations of "red" that accumulate into the same
+ * location.
+ *
+ * Two iterations that accumulate into different locations do not
+ * interfere, and the dependences between them, of which there are none,
+ * are not what is being relaxed here.  When the accumulator is a scalar
+ * the location is the same for every iteration and this is every pair.
+ */
+__isl_give isl_union_map *ppcg_reduction_same_location(
+	struct ppcg_reduction *red)
+{
+	isl_map *acc, *rev, *same;
 
-	return isl_union_set_from_set(isl_map_domain(map));
+	acc = reduction_access(red);
+	rev = isl_map_reverse(isl_map_copy(acc));
+	same = isl_map_apply_range(acc, rev);
+
+	return isl_union_map_from_map(same);
 }
 
 /* Every ordering between the iterations of one accumulation.
@@ -253,19 +278,31 @@ __isl_give isl_union_set *ppcg_reduction_domain(struct ppcg_reduction *red)
  * dependences: a statement that accumulates into one location while
  * reading another accumulator has to run after the accumulation into
  * that other location has finished.
+ *
+ * Nothing is dropped for an accumulation whose location is only known
+ * once the code runs, as in h[idx[i]] += a[i].  The scop describes such
+ * a statement over a domain that also carries the value read from idx,
+ * which the schedule does not, so the intersection below leaves nothing
+ * and the loop stays sequential.  That is the safe answer: the pairs of
+ * iterations that touch the same location cannot be told apart from the
+ * ones that do not, and the statement may well carry a dependence that
+ * has nothing to do with accumulating.
  */
 static __isl_give isl_union_map *reduction_orderings(struct ppcg_scop *scop,
 	struct ppcg_reduction *red)
 {
 	isl_union_set *dom;
-	isl_union_map *sched;
+	isl_union_map *sched, *orderings;
 
-	dom = ppcg_reduction_domain(red);
+	dom = reduction_domain(red);
 	sched = isl_schedule_get_map(scop->schedule);
 	sched = isl_union_map_intersect_domain(sched, dom);
 
-	return isl_union_map_lex_lt_union_map(isl_union_map_copy(sched),
-						sched);
+	orderings = isl_union_map_lex_lt_union_map(isl_union_map_copy(sched),
+							sched);
+
+	return isl_union_map_intersect(orderings,
+					ppcg_reduction_same_location(red));
 }
 
 __isl_give isl_union_map *ppcg_reduction_dependences(struct ppcg_scop *scop,
@@ -281,8 +318,6 @@ __isl_give isl_union_map *ppcg_reduction_dependences(struct ppcg_scop *scop,
 		struct ppcg_reduction *red = &reductions->red[i];
 		isl_union_map *orderings;
 
-		if (!ppcg_reduction_is_scalar(red))
-			continue;
 		orderings = reduction_orderings(scop, red);
 		if (!deps)
 			deps = orderings;

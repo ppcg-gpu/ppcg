@@ -57,8 +57,11 @@ void ppcg_reductions_print(FILE *out, struct ppcg_scop *scop,
 	struct ppcg_reductions *reductions);
 
 /* Is the location accumulated into by "red" a single one, the same for
- * every iteration?  Only then can each thread be given a copy of it and
- * the copies combined afterwards, which is what the generated code does.
+ * every iteration?  Such a location can be named in a reduction clause,
+ * so that each thread accumulates into a copy of its own and the copies
+ * are put back together afterwards.  An element of an array cannot,
+ * since which element it is may only be known once the code runs, so
+ * those accumulations are made atomic instead.
  */
 int ppcg_reduction_is_scalar(struct ppcg_reduction *red);
 
@@ -68,28 +71,29 @@ const char *ppcg_reduction_name(struct ppcg_reduction *red);
 /* The operator of "red", as it is written in an OpenMP clause. */
 const char *ppcg_reduction_op_str(struct ppcg_reduction *red);
 
-/* The iterations of the statement that performs "red".  A loop only has
- * to name the accumulator in a clause if these are among the iterations
- * it runs.
+/* The pairs of iterations of "red" that accumulate into the same
+ * location.  A loop only has to name the accumulator in a clause if it
+ * runs some of these pairs in different threads; when every pair stays
+ * within one iteration of the loop, as it does for y[i] += ..., the
+ * threads do not share the accumulator to begin with.
  */
-__isl_give isl_union_set *ppcg_reduction_domain(struct ppcg_reduction *red);
+__isl_give isl_union_map *ppcg_reduction_same_location(
+	struct ppcg_reduction *red);
 
 /* The dependences that only order the iterations of an accumulation with
  * respect to each other.
  *
  * They are real: each iteration reads what the previous one wrote.  What
  * makes them special is that the result does not depend on the order in
- * which they are applied, so a schedule is free to ignore them, provided
- * the generated code gives every thread its own copy of the accumulator
- * and combines the copies afterwards.
+ * which they are applied, so a loop carrying nothing else may be run in
+ * parallel, provided the generated code keeps the threads from losing
+ * each other's updates.
  *
- * They may only be taken out of what constrains the schedule.  The same
- * dependences also say that the value written by one iteration is still
- * wanted by another, and dropping them there would make every write but
- * the last one dead.
- *
- * Only accumulations into a single location are described, since those
- * are the ones the backend can currently combine.
+ * They may only be taken out of the test that asks whether a loop of the
+ * generated code can be run in parallel.  The same dependences also say
+ * that the value written by one iteration is still wanted by another,
+ * and dropping them from what constrains the schedule would make every
+ * write but the last one dead.
  */
 __isl_give isl_union_map *ppcg_reduction_dependences(struct ppcg_scop *scop,
 	struct ppcg_reductions *reductions);
