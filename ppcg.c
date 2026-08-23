@@ -37,29 +37,6 @@
 #include "opencl.h"
 #include "cpu.h"
 
-struct options {
-	struct pet_options *pet;
-	struct ppcg_options *ppcg;
-	char *input;
-	char *output;
-};
-
-const char *ppcg_version(void);
-static void print_version(void)
-{
-	printf("%s", ppcg_version());
-}
-
-ISL_ARGS_START(struct options, options_args)
-ISL_ARG_CHILD(struct options, pet, "pet", &pet_options_args, "pet options")
-ISL_ARG_CHILD(struct options, ppcg, NULL, &ppcg_options_args, "ppcg options")
-ISL_ARG_STR(struct options, output, 'o', NULL,
-	"filename", NULL, "output filename (c and opencl targets)")
-ISL_ARG_ARG(struct options, input, "input", NULL)
-ISL_ARG_VERSION(print_version)
-ISL_ARGS_END
-
-ISL_ARG_DEF(options, struct options, options_args)
 
 /* Return a pointer to the final path component of "filename" or
  * to "filename" itself if it does not contain any components.
@@ -1080,30 +1057,33 @@ static int print_original(struct pet_scop *scop, struct ppcg_options *options)
 	return 0;
 }
 
-/* Callback for pet_transform_C_source that transforms
- * the given pet_scop to a ppcg_scop before calling the
- * ppcg_transform callback.
+/* Turn "scop" into a ppcg_scop and hand it to "fn", printing to "p".
  *
  * If "scop" contains any data dependent conditions or if we may
  * not be able to print the transformed program, then just print
  * the original code.
+ *
+ * This is the part of transforming a scop that does not depend on
+ * where the scop came from.  A scop read out of one C source file and
+ * a scop read out of a linked AST reach the same code through it.
  */
-static __isl_give isl_printer *transform(__isl_take isl_printer *p,
-	struct pet_scop *scop, void *user)
+__isl_give isl_printer *ppcg_transform_scop(__isl_take isl_printer *p,
+	struct pet_scop *scop, struct ppcg_options *options,
+	__isl_give isl_printer *(*fn)(__isl_take isl_printer *p,
+		struct ppcg_scop *scop, void *user), void *user)
 {
-	struct ppcg_transform_data *data = user;
 	struct ppcg_scop *ps;
 
-	if (print_original(scop, data->options)) {
+	if (print_original(scop, options)) {
 		p = pet_scop_print_original(scop, p);
 		pet_scop_free(scop);
 		return p;
 	}
 
 	scop = pet_scop_align_params(scop);
-	ps = ppcg_scop_from_pet_scop(scop, data->options);
+	ps = ppcg_scop_from_pet_scop(scop, options);
 
-	if (data->options->debug->dump_reductions) {
+	if (options->debug->dump_reductions) {
 		struct ppcg_reductions *reductions;
 
 		reductions = ppcg_find_reductions(ps);
@@ -1115,12 +1095,25 @@ static __isl_give isl_printer *transform(__isl_take isl_printer *p,
 		return p;
 	}
 
-	p = data->transform(p, ps, data->user);
+	p = fn(p, ps, user);
 
 	ppcg_scop_free(ps);
 	pet_scop_free(scop);
 
 	return p;
+}
+
+/* Callback for pet_transform_C_source that transforms
+ * the given pet_scop to a ppcg_scop before calling the
+ * ppcg_transform callback.
+ */
+static __isl_give isl_printer *transform(__isl_take isl_printer *p,
+	struct pet_scop *scop, void *user)
+{
+	struct ppcg_transform_data *data = user;
+
+	return ppcg_transform_scop(p, scop, data->options,
+					data->transform, data->user);
 }
 
 /* Transform the C source file "input" by rewriting each scop
@@ -1139,58 +1132,3 @@ int ppcg_transform(isl_ctx *ctx, const char *input, FILE *out,
 	return pet_transform_C_source(ctx, input, out, &transform, &data);
 }
 
-/* Check consistency of options.
- *
- * Return -1 on error.
- */
-static int check_options(isl_ctx *ctx)
-{
-	struct options *options;
-
-	options = isl_ctx_peek_options(ctx, &options_args);
-	if (!options)
-		isl_die(ctx, isl_error_internal,
-			"unable to find options", return -1);
-
-	if (options->ppcg->openmp &&
-	    !isl_options_get_ast_build_atomic_upper_bound(ctx))
-		isl_die(ctx, isl_error_invalid,
-			"OpenMP requires atomic bounds", return -1);
-
-	return 0;
-}
-
-int main(int argc, char **argv)
-{
-	int r;
-	isl_ctx *ctx;
-	struct options *options;
-
-	options = options_new_with_defaults();
-	assert(options);
-
-	ctx = isl_ctx_alloc_with_options(&options_args, options);
-	ppcg_options_set_target_defaults(options->ppcg);
-	isl_options_set_ast_build_detect_min_max(ctx, 1);
-	isl_options_set_ast_print_macro_once(ctx, 1);
-	isl_options_set_schedule_whole_component(ctx, 0);
-	isl_options_set_schedule_maximize_band_depth(ctx, 1);
-	isl_options_set_schedule_maximize_coincidence(ctx, 1);
-	pet_options_set_encapsulate_dynamic_control(ctx, 1);
-	argc = options_parse(options, argc, argv, ISL_ARG_ALL);
-
-	if (check_options(ctx) < 0)
-		r = EXIT_FAILURE;
-	else if (options->ppcg->target == PPCG_TARGET_CUDA)
-		r = generate_cuda(ctx, options->ppcg, options->input);
-	else if (options->ppcg->target == PPCG_TARGET_OPENCL)
-		r = generate_opencl(ctx, options->ppcg, options->input,
-				options->output);
-	else
-		r = generate_cpu(ctx, options->ppcg, options->input,
-				options->output);
-
-	isl_ctx_free(ctx);
-
-	return r;
-}

@@ -138,5 +138,9 @@ int ppcg_transform(isl_ctx *ctx, const char *input, FILE *out,
 	struct ppcg_options *options,
 	__isl_give isl_printer *(*fn)(__isl_take isl_printer *p,
 		struct ppcg_scop *scop, void *user), void *user);
+__isl_give isl_printer *ppcg_transform_scop(__isl_take isl_printer *p,
+	struct pet_scop *scop, struct ppcg_options *options,
+	__isl_give isl_printer *(*fn)(__isl_take isl_printer *p,
+		struct ppcg_scop *scop, void *user), void *user);
 
 #endif

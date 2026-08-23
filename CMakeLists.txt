@@ -62,7 +62,11 @@ file(GENERATE
     CONTENT "#define GIT_HEAD_ID \"${GIT_HEAD_VERSION}\"\n"
 )
 
-add_executable(ppcg
+# Everything both programs are made of.  ppcg reads one C source file
+# and rewrites it; ppcg_linked reads serialised units, links them and
+# writes each one out.  What they share is everything except the command
+# line, so it is compiled once.
+add_library(ppcg_core OBJECT
     cpu.c
     cuda.c
     opencl.c
@@ -83,13 +87,36 @@ add_executable(ppcg
     util.c
     version.c
 )
+target_include_directories(ppcg_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+target_link_libraries(ppcg_core PUBLIC pet isl)
+
+add_executable(ppcg ppcg_main.c)
 # The only C++ in the program comes from the libraries it links against.
 set_target_properties(ppcg PROPERTIES LINKER_LANGUAGE CXX)
 target_include_directories(ppcg PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
 )
-target_link_libraries(ppcg PRIVATE pet isl)
+target_link_libraries(ppcg PRIVATE ppcg_core pet isl)
+
+# Transform every scop of a linked AST.  A linked AST has no single file
+# to rewrite, so this is its own program rather than a mode of ppcg, in
+# the way that pet_linked_scop is its own program rather than a mode of
+# pet.
+add_executable(ppcg_linked ppcg_linked.c)
+set_target_properties(ppcg_linked PROPERTIES LINKER_LANGUAGE CXX)
+# ast_link.h is pet's own header rather than an installed one: linking
+# ASTs is what pet_linked_scop does from inside pet, and this does the
+# same from outside it.
+target_include_directories(ppcg_linked PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/pet
+)
+target_link_libraries(ppcg_linked PRIVATE ppcg_core pet isl)
 
 install(TARGETS ppcg RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 

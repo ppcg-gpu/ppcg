@@ -998,8 +998,12 @@ static __isl_give isl_printer *generate(__isl_take isl_printer *p,
 }
 
 /* Wrapper around generate for use as a ppcg_transform callback.
+ *
+ * Exported because the link-time driver reaches the same generation
+ * without going through pet_transform_C_source, which rewrites one
+ * source file and has nothing to rewrite when there are many.
  */
-static __isl_give isl_printer *print_cpu_wrap(__isl_take isl_printer *p,
+__isl_give isl_printer *print_cpu_wrap(__isl_take isl_printer *p,
 	struct ppcg_scop *scop, void *user)
 {
 	struct ppcg_options *options = user;
