@@ -405,6 +405,107 @@ foreach(test_file ${TEST_FILES})
 endforeach()
 
 #--------------------------------------------------------------------
+# Dead code elimination
+#
+# Four kernels: {one loop, two loops} x {returns a value, writes through
+# a pointer}.  Each is translated with scops autodetected, so the whole
+# function body is one scop, and then built and run next to a plain
+# compilation of the same kernel.  Comparing what the two print is what
+# distinguishes an elimination that terminates from one that terminates
+# by deleting statements the program needed.
+#
+# The printing is done by a driver that is never translated.  pet leaves
+# a call that only prints out of the scop on purpose, so a driver ppcg
+# had been run over would print nothing whatever the kernel computed,
+# and every cell would compare equal for the same wrong reason.  The
+# driver is chosen by the cell's suffix: _ret calls total_ret, _ptr calls
+# total_ptr.
+#
+# ppcg is run twice over each file on purpose.  The build needs the
+# translated source to compile it, and a translation that never returns
+# would wedge the build with no test to fail; DeadCodeTranslate_* runs it
+# again as a test of its own, under a TIMEOUT, so a return of the hang is
+# recorded as a failing test rather than a build that never finishes.
+#
+# CMake regular expressions are anchored to the whole string rather than
+# per line, so "^DeadCodeRun_twoloops_ptr$" names exactly one test.
+#--------------------------------------------------------------------
+
+file(GLOB DEADCODE_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/deadcode/*.c")
+
+set(RUN_TRANSLATE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunTranslate.cmake)
+set(DEADCODE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tests/deadcode)
+
+function(add_deadcode_test source)
+    get_filename_component(base_name ${source} NAME_WE)
+    set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/tests/deadcode/${base_name}")
+    set(generated "${output_dir}/${base_name}.ppcg.c")
+
+    if(NOT base_name MATCHES "_(ret|ptr)$")
+        message(FATAL_ERROR
+            "dead code cell ${base_name} names no driver: a file in "
+            "tests/deadcode has to end in _ret or _ptr")
+    endif()
+    set(driver "${DEADCODE_DIR}/drivers/driver_${CMAKE_MATCH_1}.c")
+
+    set(reference deadcode_${base_name}_ref)
+    add_executable(${reference} ${source} ${driver})
+    target_include_directories(${reference} PRIVATE ${DEADCODE_DIR})
+    set_target_properties(${reference} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${output_dir}
+        C_STANDARD 99
+        C_EXTENSIONS ON
+    )
+
+    add_custom_command(OUTPUT ${generated}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir}
+        COMMAND ${CMAKE_COMMAND}
+            -DPPCG=$<TARGET_FILE:ppcg>
+            -DSOURCE=${source}
+            -DOUTPUT=${generated}
+            -DTIMEOUT_S=30
+            -P ${RUN_TRANSLATE}
+        DEPENDS ppcg ${source} ${RUN_TRANSLATE}
+        COMMENT "Translating ${base_name} with scops autodetected"
+        VERBATIM
+    )
+
+    set(candidate deadcode_${base_name}_cand)
+    add_executable(${candidate} ${generated} ${driver})
+    target_include_directories(${candidate} PRIVATE ${DEADCODE_DIR})
+    set_target_properties(${candidate} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${output_dir}
+        C_STANDARD 99
+        C_EXTENSIONS ON
+    )
+
+    add_test(NAME DeadCodeTranslate_${base_name}
+        COMMAND ${CMAKE_COMMAND}
+            -DPPCG=$<TARGET_FILE:ppcg>
+            -DSOURCE=${source}
+            -DOUTPUT=${output_dir}/${base_name}.timed.c
+            -DTIMEOUT_S=30
+            -P ${RUN_TRANSLATE}
+    )
+    set_tests_properties(DeadCodeTranslate_${base_name} PROPERTIES TIMEOUT 60)
+
+    add_test(NAME DeadCodeRun_${base_name}
+        COMMAND ${CMAKE_COMMAND}
+            -DREFERENCE=$<TARGET_FILE:${reference}>
+            -DCANDIDATE=$<TARGET_FILE:${candidate}>
+            -DOUTPUT_DIR=${output_dir}
+            "-DCOMPARE=${Python3_EXECUTABLE}|${COMPARE_OUTPUTS}"
+            -P ${RUN_AND_COMPARE}
+    )
+    set_tests_properties(DeadCodeRun_${base_name} PROPERTIES TIMEOUT 60)
+endfunction()
+
+foreach(test_file ${DEADCODE_FILES})
+    add_deadcode_test(${test_file})
+endforeach()
+
+#--------------------------------------------------------------------
 # OpenCL tests
 #--------------------------------------------------------------------
 

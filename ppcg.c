@@ -835,31 +835,6 @@ static void report_dead_code(struct ppcg_scop *ps,
 	isl_union_set_free(dead);
 }
 
-/* Determine constraints of "old" that are still valid for "extended",
- * where "old" is assumed to be a subset of "extended".
- *
- * First select constraints that appear in the description of "old" and
- * that are valid for all elements in the corresponding spaces.
- * Then compute the gist of these constraints with respect to "extended".
- * This can only remove constraints that are valid for "extended",
- * so the result consists of constraints that may not be valid for "extended".
- * Computing the gist of the original constraints with these possibly
- * invalid constraints returns constraints that are definitely valid.
- * Note that even though the gist operation is a heuristic operation,
- * the bad constraints are guaranteed to be removed by the second gist
- * because they appear directly in the input.
- */
-static __isl_give isl_union_set *shared_constraints(
-	__isl_take isl_union_set *old, __isl_take isl_union_set *extended)
-{
-	isl_union_set *hull, *gist, *valid;
-
-	hull = isl_union_set_plain_unshifted_simple_hull(old);
-	gist = isl_union_set_copy(hull);
-	gist = isl_union_set_gist(gist, extended);
-	return isl_union_set_gist(hull, gist);
-}
-
 /* Eliminate dead code from ps->domain.
  *
  * In particular, intersect both ps->domain and the domain of
@@ -870,27 +845,42 @@ static __isl_give isl_union_set *shared_constraints(
  * this domain such that the removed instances will no longer
  * be considered as targets of dataflow.
  *
- * We start with the iteration domains that call functions
- * and the set of iterations that last write to an array
- * (except those that are later killed).
+ * We start with the iteration domains that call functions, those that
+ * return from the scop, and the set of iterations that last write to
+ * an array (except those that are later killed).  These are the roots:
+ * what the scop computes for whoever comes after it.
  *
- * Then we add those statement iterations that produce
- * something needed by the "live" statements iterations.
- * We keep doing this until no more statement iterations can be added.
- * To ensure that the procedure terminates, we compute the affine
- * hull of the live iterations each time we have added extra iterations.
- * This affine hull is only computed in spaces that already had
- * live iterations before adding the latest extra iterations.
- * The extra iterations outside these spaces are added directly.
- * To avoid losing too much information by computing the affine hull,
- * the result is bounded by some constraints that are known to still be valid.
- * These are the constraints of the original iteration domains,
- * as well as constraints that were valid before the extra iterations
- * were added and that are not invalidated by those extra iterations.
+ * Then we add the statement instances that produce something needed by
+ * a live instance, and the instances that produce something needed by
+ * those, and so on.  That is the backward image of the roots under the
+ * transitive closure of dep_flow, which reaches the whole of every
+ * dependence chain ending in a root in a single step, rather than one
+ * hop per iteration.
+ *
+ * The closure is asked for without an exactness flag on purpose.  isl
+ * documents its result as possibly being an overapproximation, never an
+ * underapproximation, and an overapproximated closure keeps instances
+ * that nothing needs, which costs a missed elimination and nothing else.
+ * An underapproximation is what would be unsound here, and that is the
+ * one thing isl does not return.
+ *
+ * The roots are added back after applying the closure: a root need not
+ * lie in its own backward image.  The last write to a live-out array
+ * has no consumer inside the scop, which is exactly what makes it a
+ * root, so nothing maps to it under dep_flow.
+ *
+ * No affine hull is taken anywhere, which is what the previous
+ * formulation of this procedure used to bound the number of iterations.
+ * Widening "live" to its affine hull and then cutting the result back
+ * with the constraints that survive is not a monotone step: the hull
+ * adds instances the intersections then remove, so "live" could reach a
+ * state that reproduces itself exactly while the set of instances it
+ * demands stayed strictly larger, and the subset test that ended the
+ * loop could never become true.
  */
 static void eliminate_dead_code(struct ppcg_scop *ps)
 {
-	isl_union_set *live;
+	isl_union_set *live, *roots;
 	isl_union_map *dep;
 	isl_union_pw_multi_aff *tagger;
 
@@ -914,35 +904,13 @@ static void eliminate_dead_code(struct ppcg_scop *ps)
 
 	dep = isl_union_map_copy(ps->dep_flow);
 	dep = isl_union_map_reverse(dep);
+	dep = isl_union_map_transitive_closure(dep, NULL);
 
-	for (;;) {
-		isl_union_set *extra, *universe, *same_space, *other_space;
-		isl_union_set *prev, *valid;
-
-		extra = isl_union_set_apply(isl_union_set_copy(live),
-					    isl_union_map_copy(dep));
-		if (isl_union_set_is_subset(extra, live)) {
-			isl_union_set_free(extra);
-			break;
-		}
-
-		universe = isl_union_set_universe(isl_union_set_copy(live));
-		same_space = isl_union_set_intersect(isl_union_set_copy(extra),
-						isl_union_set_copy(universe));
-		other_space = isl_union_set_subtract(extra, universe);
-
-		prev = isl_union_set_copy(live);
-		live = isl_union_set_union(live, same_space);
-		valid = shared_constraints(prev, isl_union_set_copy(live));
-
-		live = isl_union_set_affine_hull(live);
-		live = isl_union_set_intersect(live, valid);
-		live = isl_union_set_intersect(live,
-					    isl_union_set_copy(ps->domain));
-		live = isl_union_set_union(live, other_space);
-	}
-
-	isl_union_map_free(dep);
+	roots = live;
+	live = isl_union_set_apply(isl_union_set_copy(roots), dep);
+	live = isl_union_set_union(live, roots);
+	live = isl_union_set_intersect(live, isl_union_set_copy(ps->domain));
+	live = isl_union_set_coalesce(live);
 
 	report_dead_code(ps, live);
 
