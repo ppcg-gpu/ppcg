@@ -260,6 +260,19 @@ endfunction()
 # nothing.  The dependences they carry are only left out of the test that
 # asks whether a loop can be run in parallel, and that test is only made
 # when the loops are going to be marked.
+# What a scop returns is what it was written to compute.  Without the
+# return counting as a use, everything that feeds it is dead code and
+# the loop disappears, leaving a function that returns nothing.
+add_test(NAME Codegen_returned_value
+    COMMAND ${CMAKE_COMMAND}
+        -DPPCG=$<TARGET_FILE:ppcg>
+        -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/autodetect/returned_value.c
+        -DBINDIR=${CMAKE_CURRENT_BINARY_DIR}/test_outputs/returned_value
+        -DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/tests/autodetect/returned_value.expected
+        "-DOPTIONS=--target=c|--pet-autodetect"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunReductionCodegenTest.cmake
+)
+
 add_test(NAME Reduction_codegen_sum_plain
     COMMAND ${CMAKE_COMMAND}
         -DPPCG=$<TARGET_FILE:ppcg>

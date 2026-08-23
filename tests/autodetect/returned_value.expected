@@ -1,0 +1,2 @@
+s += a[c0];
+return s;

@@ -317,6 +317,20 @@ static __isl_give isl_union_set *collect_call_domains(struct pet_scop *scop)
 	return collect_domains(scop, &has_call);
 }
 
+/* Is "stmt" a return statement?
+ */
+static int is_return(struct pet_stmt *stmt)
+{
+	return pet_tree_get_type(stmt->body) == pet_tree_return;
+}
+
+/* Collect the iteration domains of the return statements in "scop".
+ */
+static __isl_give isl_union_set *collect_return_domains(struct pet_scop *scop)
+{
+	return collect_domains(scop, &is_return);
+}
+
 /* Given a union of "tagged" access relations of the form
  *
  *	[S_i[...] -> R_j[]] -> A_k[...]
@@ -885,6 +899,18 @@ static void eliminate_dead_code(struct ppcg_scop *ps)
 		live = isl_union_set_union(live, isl_union_set_copy(ps->call));
 		live = isl_union_set_coalesce(live);
 	}
+	/* What a scop returns leaves it.  Nothing inside the scop writes
+	 * it anywhere that outlives the scop -- the variable holding it is
+	 * declared in the scop and killed at the end of it -- so without
+	 * this the return, and everything that computes what it returns,
+	 * is dead.  A whole function body is a scop under autodetection,
+	 * which is the only way a linked AST is read, so this is the
+	 * ordinary case there rather than a corner of it.
+	 */
+	if (!isl_union_set_is_empty(ps->ret)) {
+		live = isl_union_set_union(live, isl_union_set_copy(ps->ret));
+		live = isl_union_set_coalesce(live);
+	}
 
 	dep = isl_union_map_copy(ps->dep_flow);
 	dep = isl_union_map_reverse(dep);
@@ -962,6 +988,7 @@ static void *ppcg_scop_free(struct ppcg_scop *ps)
 	isl_set_free(ps->context);
 	isl_union_set_free(ps->domain);
 	isl_union_set_free(ps->call);
+	isl_union_set_free(ps->ret);
 	isl_union_map_free(ps->tagged_reads);
 	isl_union_map_free(ps->reads);
 	isl_union_map_free(ps->live_in);
@@ -1022,6 +1049,7 @@ static struct ppcg_scop *ppcg_scop_from_pet_scop(struct pet_scop *scop,
 	}
 	ps->domain = collect_non_kill_domains(scop);
 	ps->call = collect_call_domains(scop);
+	ps->ret = collect_return_domains(scop);
 	ps->tagged_reads = pet_scop_get_tagged_may_reads(scop);
 	ps->reads = pet_scop_get_may_reads(scop);
 	ps->tagged_may_writes = pet_scop_get_tagged_may_writes(scop);
@@ -1043,7 +1071,7 @@ static struct ppcg_scop *ppcg_scop_from_pet_scop(struct pet_scop *scop,
 	compute_dependences(ps);
 	eliminate_dead_code(ps);
 
-	if (!ps->context || !ps->domain || !ps->call || !ps->reads ||
+	if (!ps->context || !ps->domain || !ps->call || !ps->ret || !ps->reads ||
 	    !ps->may_writes || !ps->must_writes || !ps->tagged_must_kills ||
 	    !ps->must_kills || !ps->schedule || !ps->independence || !ps->names)
 		return ppcg_scop_free(ps);

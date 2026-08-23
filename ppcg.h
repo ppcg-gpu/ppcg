@@ -82,6 +82,13 @@ struct ppcg_scop {
 	isl_set *context;
 	isl_union_set *domain;
 	isl_union_set *call;
+	/* The iteration domains of the return statements.
+	 *
+	 * What a scop returns leaves it, so a return keeps alive
+	 * everything that computes what it returns, in the same way
+	 * a call does.
+	 */
+	isl_union_set *ret;
 	isl_union_map *tagged_reads;
 	isl_union_map *reads;
 	isl_union_map *live_in;
