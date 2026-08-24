@@ -235,33 +235,43 @@ static int make_way(char *path)
 	return 0;
 }
 
-/* Name the file the transformed "unit" is written to: its own name with
- * ".ppcg" put before the extension, under "dir", and under as much of
- * the unit's own path as it was given.
+/* The last part of "unit"'s path, which is what its output is named
+ * after.
+ */
+static const char *base_name(const char *unit)
+{
+	const char *slash = strrchr(unit, '/');
+
+	return slash ? slash + 1 : unit;
+}
+
+/* Name the file the transformed "unit" is written to: the last part of
+ * its own name with ".ppcg" put before the extension, directly under
+ * "dir".
  *
- * The path is kept and not just the last part of it.  A program of any
- * size has two units of one name -- llama-dspark has a quants.c and a
+ * The directory is flat.  A unit is named by the path it was written in,
+ * which after a link is the absolute path it was read from, and putting
+ * the output under that path again buries it: the caller asked for a
+ * directory and would be given a tree with the whole of the source's own
+ * path inside it.
+ *
+ * Two units can share a last part -- llama-dspark has a quants.c and a
  * repack.cpp twice over, once for the machine it is built for and once
- * for the plain version -- and naming the output after the last part
- * alone puts both in one file, where the second silently replaces the
- * first.  Two units of the corpus would then never reach the compiler
- * and what was built would not be the program that was read.
+ * plain -- and then one output name stands for two units.  That is
+ * answered where the units are gone over, by refusing to write the
+ * second, rather than here: this only says what a unit is called.
  */
 static int output_name(char *out, size_t size, const char *dir,
 	const char *unit)
 {
+	const char *base = base_name(unit);
 	const char *ext;
 	size_t len;
 
-	ext = strrchr(unit, '.');
-	if (ext && strchr(ext, '/'))
-		ext = NULL;
-	len = ext ? (size_t) (ext - unit) : strlen(unit);
+	ext = strrchr(base, '.');
+	len = ext ? (size_t) (ext - base) : strlen(base);
 
-	while (*unit == '/')
-		++unit, --len;
-
-	snprintf(out, size, "%s/%.*s.ppcg%s", dir, (int) len, unit,
+	snprintf(out, size, "%s/%.*s.ppcg%s", dir, (int) len, base,
 		ext ? ext : ".c");
 
 	return make_way(out);
@@ -381,17 +391,32 @@ static int transform_unit(isl_ctx *ctx, const char *unit,
  *
  * The scops are grouped by the file they were written in, which their
  * pet_loc names, and each group is sorted by where it stands.
+ *
+ * Two units whose paths differ can end in the same name, and the output
+ * directory is flat, so they would be one file with the second standing
+ * where the first was written.  llama-dspark has a quants.c and a
+ * repack.cpp twice over, once for the machine it is built for and once
+ * plain, so this is what a corpus of any size looks like rather than a
+ * corner of it.  Both units are named, since which two collided is the
+ * whole of what the caller has to act on.
  */
 static int transform_units(isl_ctx *ctx, struct collected *c,
 	struct ppcg_options *options, const char *dir)
 {
 	int i, j;
 	int r = 0;
+	int n_done = 0;
+	char **done;
+
+	done = calloc(c->n, sizeof(char *));
+	if (!done)
+		return -1;
 
 	for (i = 0; i < c->n && r == 0; ++i) {
 		char *unit;
 		struct pet_scop **group;
 		int n = 0;
+		int k;
 
 		if (!c->scop[i])
 			continue;
@@ -408,6 +433,22 @@ static int transform_units(isl_ctx *ctx, struct collected *c,
 			free(unit);
 			free(group);
 			r = -1;
+			break;
+		}
+
+		for (k = 0; k < n_done; ++k) {
+			if (strcmp(base_name(done[k]), base_name(unit)))
+				continue;
+			fprintf(stderr, "%s and %s are both written to %s; "
+				"the units of one program have to end in "
+				"names of their own\n",
+				done[k], unit, base_name(unit));
+			r = -1;
+			break;
+		}
+		if (r < 0) {
+			free(unit);
+			free(group);
 			break;
 		}
 
@@ -431,8 +472,12 @@ static int transform_units(isl_ctx *ctx, struct collected *c,
 		r = transform_unit(ctx, unit, group, n, options, dir);
 
 		free(group);
-		free(unit);
+		done[n_done++] = unit;
 	}
+
+	for (i = 0; i < n_done; ++i)
+		free(done[i]);
+	free(done);
 
 	return r;
 }
