@@ -1,181 +1,200 @@
-CMakeLists.txt            |  58 ++++++++++++++++++++++--
- engine/src/CMakeLists.txt | 111 +++++++++++++++++++++++++---------------------
- 2 files changed, 114 insertions(+), 55 deletions(-)
-
---- Changes ---
-
-CMakeLists.txt
-  @@ -256,6 +256,52 @@ license_add_file("llama.cpp" "LICENSE")
-  +# A whole-program engine.
-  +#
-  +# LLAMA_WHOLE_PROGRAM_LIB names one shared library holding every unit of
-  +# the engine, made by linking their ASTs together and generating one
-  +# module out of the result -- see ~/forge/ppcg, tests/whole-program.
-  +# Given one, the engine is not compiled here at all: the four targets a
-  +# build usually makes are declared as that one library instead, so that
-  +# everything downstream links it and nothing else changes.
-  +#
-  +# What it is for is checking that the whole-program path kept the
-  +# program.  Its own account of itself -- every call resolved, nothing
-  +# refused -- is made from the same reading that produced the module, so
-  +# it cannot notice what the reading dropped.  The project's own tests
-  +# can: they were written against the engine and do not know where it
-  +# came from.
-  +#
-  +# The drafter's library is still compiled from source.  It is the same
-  +# engine again with another model and a prefix on its symbols, so a
-  +# whole-program build of it is a second library and a second question.
-  +if (LLAMA_WHOLE_PROGRAM_LIB)
-  +    if (NOT EXISTS "${LLAMA_WHOLE_PROGRAM_LIB}")
-  +        message(FATAL_ERROR
-  +            "LLAMA_WHOLE_PROGRAM_LIB names ${LLAMA_WHOLE_PROGRAM_LIB}, "
-  +            "which is not there")
-  +    endif()
-  +    message(STATUS
-  +        "Engine taken whole from ${LLAMA_WHOLE_PROGRAM_LIB}")
-  +
-  +    add_library(llama SHARED IMPORTED GLOBAL)
-  +    set_target_properties(llama PROPERTIES
-  +        IMPORTED_LOCATION "${LLAMA_WHOLE_PROGRAM_LIB}"
-  +        IMPORTED_NO_SONAME TRUE
-  +        INTERFACE_INCLUDE_DIRECTORIES
-  +            "${CMAKE_CURRENT_SOURCE_DIR}/engine/include;${CMAKE_CURRENT_SOURCE_DIR}/engine/ggml/include"
-  +        INTERFACE_COMPILE_DEFINITIONS "LLAMA_SHARED;GGML_SHARED")
-  +
-  +    # The three ggml targets name the same library: one module holds what
-  +    # all of them held, and a caller that asks for any of them is asking
-  +    # for what is in there.
-  +    foreach(part ggml ggml-base ggml-cpu)
-  +        add_library(${part} INTERFACE IMPORTED GLOBAL)
-  +        set_target_properties(${part} PROPERTIES
-  +            INTERFACE_LINK_LIBRARIES llama)
-  +    endforeach()
-  +endif()
-  +
-   if (LLAMA_USE_SYSTEM_GGML)
-       message(STATUS "Using system-provided libggml, skipping ggml build")
-       find_package(ggml REQUIRED)
-  @@ -323,11 +369,15 @@ set(LLAMA_PUBLIC_HEADERS
-  -set_target_properties(llama
-  -    PROPERTIES
-  -        PUBLIC_HEADER "${LLAMA_PUBLIC_HEADERS}")
-  +# An engine taken whole is a library that already exists and is not this
-  +# build's to install or to attach headers to.
-  +if (NOT LLAMA_WHOLE_PROGRAM_LIB)
-  +    set_target_properties(llama
-  +        PROPERTIES
-  +            PUBLIC_HEADER "${LLAMA_PUBLIC_HEADERS}")
-   
-  -install(TARGETS llama LIBRARY PUBLIC_HEADER)
-  +    install(TARGETS llama LIBRARY PUBLIC_HEADER)
-  +endif()
-   
-   if (LLAMA_BUILD_COMMON)
-       install(TARGETS llama-common LIBRARY)
-  +54 -4
-
-engine/src/CMakeLists.txt
-  @@ -32,58 +32,67 @@ llama_arch_of("${LLAMA_MODEL_DIMS}" LLAMA_ARCH_SOURCE LLAMA_ARCH_NAME)
-  +#
-  +# Not built where the engine is already a target.  A whole-program build
-  +# makes one library out of every unit of the engine at once and hands it
-  +# in as `llama`, and there is nothing for this to add: the sources below
-  +# are the ones that library was made from.  ggml is guarded the same way
-  +# a directory up, and for the same reason.
-  +if (NOT TARGET llama)
-  +
-  +    add_library(llama
-  +                ../include/llama.h
-  +                llama.cpp
-  +                llama-adapter.cpp
-  +                llama-arch.cpp
-  +                llama-batch.cpp
-  +                llama-chat.cpp
-  +                llama-context.cpp
-  +                llama-cparams.cpp
-  +                llama-grammar.cpp
-  +                llama-graph.cpp
-  +                llama-impl.cpp
-  +                llama-io.cpp
-  +                llama-kv-cache.cpp
-  +                llama-memory.cpp
-  +                llama-mmap.cpp
-  +                llama-model-loader.cpp
-  +                llama-model-saver.cpp
-  +                llama-model.cpp
-  +                models/dsv4-block.cpp
-  +                llama-quant.cpp
-  +                llama-sampler.cpp
-  +                llama-vocab.cpp
-  +                unicode-data.cpp
-  +                unicode.cpp
-  +                unicode.h
-  +                ${LLAMA_ARCH_SOURCE}
-  +                )
-  +
-  +    set_target_properties(llama PROPERTIES
-  +        VERSION ${LLAMA_INSTALL_VERSION}
-  +        SOVERSION 0
-  +        MACHO_CURRENT_VERSION 0 # keep macOS linker from seeing oversized version number
-  +    )
-  +
-  +    target_include_directories(llama PRIVATE .)
-  +    target_include_directories(llama PUBLIC ../include)
-  +    target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
-  +
-  +    # private to the target, not global: variant libraries define their own below,
-  +    # and two definitions of the same macro on one command line is a warning that
-  +    # 54 times per build buries anything real
-  +    target_compile_definitions(llama PRIVATE LLAMA_MODEL_DIMS="${LLAMA_MODEL_DIMS}")
-  +    target_include_directories(llama PRIVATE ${CMAKE_BINARY_DIR})
-  +
-  +    target_link_libraries(llama PUBLIC ggml)
-  +
-  +    if (BUILD_SHARED_LIBS)
-  +        set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
-  +        target_compile_definitions(llama PRIVATE LLAMA_BUILD)
-  +        target_compile_definitions(llama PUBLIC  LLAMA_SHARED)
-  +    endif()
-   
-  -add_library(llama
-  -            ../include/llama.h
-  -            llama.cpp
-  -            llama-adapter.cpp
-  -            llama-arch.cpp
-  -            llama-batch.cpp
-  -            llama-chat.cpp
-  -            llama-context.cpp
-  -            llama-cparams.cpp
-  -            llama-grammar.cpp
-  -            llama-graph.cpp
-  -            llama-impl.cpp
-  -            llama-io.cpp
-  -            llama-kv-cache.cpp
-  -            llama-memory.cpp
-  -            llama-mmap.cpp
-  -            llama-model-loader.cpp
-  -            llama-model-saver.cpp
-  -            llama-model.cpp
-  -            models/dsv4-block.cpp
-  -            llama-quant.cpp
-  -            llama-sampler.cpp
-  -            llama-vocab.cpp
-  -            unicode-data.cpp
-  -            unicode.cpp
-  -            unicode.h
-  -            ${LLAMA_ARCH_SOURCE}
-  -            )
-  -
-  -set_target_properties(llama PROPERTIES
-  -    VERSION ${LLAMA_INSTALL_VERSION}
-  -    SOVERSION 0
-  -    MACHO_CURRENT_VERSION 0 # keep macOS linker from seeing oversized version number
-  -)
-  -
-  -target_include_directories(llama PRIVATE .)
-  -target_include_directories(llama PUBLIC ../include)
-  -target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
-  -
-  ... (12 lines truncated)
-  +60 -51
-[full diff: rtk git diff --no-compact]
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 30154f2e6..d22537675 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -256,6 +256,52 @@ license_add_file("llama.cpp" "LICENSE")
+ # 3rd-party
+ #
+ 
++# A whole-program engine.
++#
++# LLAMA_WHOLE_PROGRAM_LIB names one shared library holding every unit of
++# the engine, made by linking their ASTs together and generating one
++# module out of the result -- see ~/forge/ppcg, tests/whole-program.
++# Given one, the engine is not compiled here at all: the four targets a
++# build usually makes are declared as that one library instead, so that
++# everything downstream links it and nothing else changes.
++#
++# What it is for is checking that the whole-program path kept the
++# program.  Its own account of itself -- every call resolved, nothing
++# refused -- is made from the same reading that produced the module, so
++# it cannot notice what the reading dropped.  The project's own tests
++# can: they were written against the engine and do not know where it
++# came from.
++#
++# The drafter's library is still compiled from source.  It is the same
++# engine again with another model and a prefix on its symbols, so a
++# whole-program build of it is a second library and a second question.
++if (LLAMA_WHOLE_PROGRAM_LIB)
++    if (NOT EXISTS "${LLAMA_WHOLE_PROGRAM_LIB}")
++        message(FATAL_ERROR
++            "LLAMA_WHOLE_PROGRAM_LIB names ${LLAMA_WHOLE_PROGRAM_LIB}, "
++            "which is not there")
++    endif()
++    message(STATUS
++        "Engine taken whole from ${LLAMA_WHOLE_PROGRAM_LIB}")
++
++    add_library(llama SHARED IMPORTED GLOBAL)
++    set_target_properties(llama PROPERTIES
++        IMPORTED_LOCATION "${LLAMA_WHOLE_PROGRAM_LIB}"
++        IMPORTED_NO_SONAME TRUE
++        INTERFACE_INCLUDE_DIRECTORIES
++            "${CMAKE_CURRENT_SOURCE_DIR}/engine/include;${CMAKE_CURRENT_SOURCE_DIR}/engine/ggml/include"
++        INTERFACE_COMPILE_DEFINITIONS "LLAMA_SHARED;GGML_SHARED")
++
++    # The three ggml targets name the same library: one module holds what
++    # all of them held, and a caller that asks for any of them is asking
++    # for what is in there.
++    foreach(part ggml ggml-base ggml-cpu)
++        add_library(${part} INTERFACE IMPORTED GLOBAL)
++        set_target_properties(${part} PROPERTIES
++            INTERFACE_LINK_LIBRARIES llama)
++    endforeach()
++endif()
++
+ if (LLAMA_USE_SYSTEM_GGML)
+     message(STATUS "Using system-provided libggml, skipping ggml build")
+     find_package(ggml REQUIRED)
+@@ -323,11 +369,15 @@ set(LLAMA_PUBLIC_HEADERS
+     ${CMAKE_CURRENT_SOURCE_DIR}/engine/include/llama.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/engine/include/llama-cpp.h)
+ 
+-set_target_properties(llama
+-    PROPERTIES
+-        PUBLIC_HEADER "${LLAMA_PUBLIC_HEADERS}")
++# An engine taken whole is a library that already exists and is not this
++# build's to install or to attach headers to.
++if (NOT LLAMA_WHOLE_PROGRAM_LIB)
++    set_target_properties(llama
++        PROPERTIES
++            PUBLIC_HEADER "${LLAMA_PUBLIC_HEADERS}")
+ 
+-install(TARGETS llama LIBRARY PUBLIC_HEADER)
++    install(TARGETS llama LIBRARY PUBLIC_HEADER)
++endif()
+ 
+ if (LLAMA_BUILD_COMMON)
+     install(TARGETS llama-common LIBRARY)
+diff --git a/engine/src/CMakeLists.txt b/engine/src/CMakeLists.txt
+index 364345cf7..c4f9909c7 100644
+--- a/engine/src/CMakeLists.txt
++++ b/engine/src/CMakeLists.txt
+@@ -32,58 +32,67 @@ llama_arch_of("${LLAMA_MODEL_DIMS}" LLAMA_ARCH_SOURCE LLAMA_ARCH_NAME)
+ #
+ 
+ # llama
++#
++# Not built where the engine is already a target.  A whole-program build
++# makes one library out of every unit of the engine at once and hands it
++# in as `llama`, and there is nothing for this to add: the sources below
++# are the ones that library was made from.  ggml is guarded the same way
++# a directory up, and for the same reason.
++if (NOT TARGET llama)
++
++    add_library(llama
++                ../include/llama.h
++                llama.cpp
++                llama-adapter.cpp
++                llama-arch.cpp
++                llama-batch.cpp
++                llama-chat.cpp
++                llama-context.cpp
++                llama-cparams.cpp
++                llama-grammar.cpp
++                llama-graph.cpp
++                llama-impl.cpp
++                llama-io.cpp
++                llama-kv-cache.cpp
++                llama-memory.cpp
++                llama-mmap.cpp
++                llama-model-loader.cpp
++                llama-model-saver.cpp
++                llama-model.cpp
++                models/dsv4-block.cpp
++                llama-quant.cpp
++                llama-sampler.cpp
++                llama-vocab.cpp
++                unicode-data.cpp
++                unicode.cpp
++                unicode.h
++                ${LLAMA_ARCH_SOURCE}
++                )
++
++    set_target_properties(llama PROPERTIES
++        VERSION ${LLAMA_INSTALL_VERSION}
++        SOVERSION 0
++        MACHO_CURRENT_VERSION 0 # keep macOS linker from seeing oversized version number
++    )
++
++    target_include_directories(llama PRIVATE .)
++    target_include_directories(llama PUBLIC ../include)
++    target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
++
++    # private to the target, not global: variant libraries define their own below,
++    # and two definitions of the same macro on one command line is a warning that
++    # 54 times per build buries anything real
++    target_compile_definitions(llama PRIVATE LLAMA_MODEL_DIMS="${LLAMA_MODEL_DIMS}")
++    target_include_directories(llama PRIVATE ${CMAKE_BINARY_DIR})
++
++    target_link_libraries(llama PUBLIC ggml)
++
++    if (BUILD_SHARED_LIBS)
++        set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
++        target_compile_definitions(llama PRIVATE LLAMA_BUILD)
++        target_compile_definitions(llama PUBLIC  LLAMA_SHARED)
++    endif()
+ 
+-add_library(llama
+-            ../include/llama.h
+-            llama.cpp
+-            llama-adapter.cpp
+-            llama-arch.cpp
+-            llama-batch.cpp
+-            llama-chat.cpp
+-            llama-context.cpp
+-            llama-cparams.cpp
+-            llama-grammar.cpp
+-            llama-graph.cpp
+-            llama-impl.cpp
+-            llama-io.cpp
+-            llama-kv-cache.cpp
+-            llama-memory.cpp
+-            llama-mmap.cpp
+-            llama-model-loader.cpp
+-            llama-model-saver.cpp
+-            llama-model.cpp
+-            models/dsv4-block.cpp
+-            llama-quant.cpp
+-            llama-sampler.cpp
+-            llama-vocab.cpp
+-            unicode-data.cpp
+-            unicode.cpp
+-            unicode.h
+-            ${LLAMA_ARCH_SOURCE}
+-            )
+-
+-set_target_properties(llama PROPERTIES
+-    VERSION ${LLAMA_INSTALL_VERSION}
+-    SOVERSION 0
+-    MACHO_CURRENT_VERSION 0 # keep macOS linker from seeing oversized version number
+-)
+-
+-target_include_directories(llama PRIVATE .)
+-target_include_directories(llama PUBLIC ../include)
+-target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
+-
+-# private to the target, not global: variant libraries define their own below,
+-# and two definitions of the same macro on one command line is a warning that
+-# 54 times per build buries anything real
+-target_compile_definitions(llama PRIVATE LLAMA_MODEL_DIMS="${LLAMA_MODEL_DIMS}")
+-target_include_directories(llama PRIVATE ${CMAKE_BINARY_DIR})
+-
+-target_link_libraries(llama PUBLIC ggml)
+-
+-if (BUILD_SHARED_LIBS)
+-    set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
+-    target_compile_definitions(llama PRIVATE LLAMA_BUILD)
+-    target_compile_definitions(llama PUBLIC  LLAMA_SHARED)
+ endif()
+ 
+ #

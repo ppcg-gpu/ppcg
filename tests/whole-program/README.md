@@ -28,10 +28,27 @@ missing, and nothing in the link's own account of itself mentioned them.
 
 ## How to run it
 
-Make the corpus and the library:
+The corpus is the units of llama-dspark as pet reads them, and it has to
+be made before anything else.  The build it is read from decides what
+the units say, so it is configured the way `build-noavx` is -- the whole
+SIMD group off, production dims -- and the flags are taken from its
+compilation database rather than guessed:
 
-    ppcg/build/ThirdParty/pet/pet_ast_link $(cat llama-dspark.units)
-    ppcg/build/ThirdParty/pet/pet_linked_ir whole.ll $(cat llama-dspark.units)
+    cmake -S . -B build-noavx -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF \
+      -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_AVX512=OFF -DGGML_FMA=OFF \
+      -DGGML_F16C=OFF -DGGML_SSE42=OFF -DGGML_BMI2=OFF \
+      -DCMAKE_C_FLAGS=-ffp-contract=off -DCMAKE_CXX_FLAGS=-ffp-contract=off \
+      -DLLAMA_MODEL_DIMS=dims/deepseek4.h -DLLAMA_DRAFT_DIMS=dims/dflash.h \
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+    pet_emit_ast --compile-commands build-noavx/compile_commands.json \
+        <source> <unit>.ast          # once per unit; see emit_corpus.py
+
+Then link them, generate one module and make one library.  The units and
+the order are in `llama-dspark.units`, and both matter:
+
+    pet_ast_link $(units)                    # has to say: refused 0
+    pet_linked_ir whole.ll $(units)
     clang -c -O2 -o whole.o whole.ll
     clang -shared -fopenmp -o libwhole.so whole.o -lm -lstdc++
 
@@ -40,10 +57,23 @@ OpenMP, so the module calls `__kmpc_*`, and a library made without it
 links but leaves thirteen undefined symbols for whoever uses it to
 discover.
 
-Then configure llama-dspark with the same options its ordinary build
-uses, plus:
+Then apply the patch to llama-dspark and configure a second build with
+the same options as the first, plus the library:
 
-    -DLLAMA_WHOLE_PROGRAM_LIB=/path/to/libwhole.so
+    git apply .../llama-dspark-whole-program-lib.patch
+    cmake -S . -B build-whole <the options above> \
+      -DLLAMA_WHOLE_PROGRAM_LIB=/path/to/libwhole.so
+    cmake --build build-whole -j
+    ctest --test-dir build-whole
 
-and build and run its tests.  `llama-dspark.units` names the units and
-the order they are linked in; both matter, and why is written there.
+The ordinary `build-noavx` is needed either way: the drafter's library
+and llama-common are compiled from source in both builds.
+
+## What it came to
+
+31 of 32.  The one that fails is `test-generate-models`, which writes
+model fixtures and skips them because this build has production dims --
+"deepseek4 model (MoE) is 128 wide and this build is 4096" -- and it
+fails the same way on `build-noavx`, so it is not about where the engine
+came from.
+
