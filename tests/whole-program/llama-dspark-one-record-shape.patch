@@ -1,0 +1,63 @@
+diff --git a/engine/ggml/src/ggml-common.h b/engine/ggml/src/ggml-common.h
+index 9dfef3d17..86742d32f 100644
+--- a/engine/ggml/src/ggml-common.h
++++ b/engine/ggml/src/ggml-common.h
+@@ -16,10 +16,22 @@ typedef uint32_t ggml_half2;
+ typedef uint16_t ggml_half;
+ typedef uint32_t ggml_half2;
+ 
+-// std-c++ allow anonymous unions but some compiler warn on it
+-#define GGML_COMMON_AGGR_U data
+-// std-c++ do not allow it.
+-#define GGML_COMMON_AGGR_S data
++// Anonymous, as in C.  Named for C++ only, these gave the blocks below a
++// different shape in each language: block_q4_K has an anonymous union in a
++// unit read as C and a member called data in one read as C++, so one
++// header described two records of one name.  Compiling each unit on its
++// own never notices.  Linking their ASTs together does: a member access
++// written in one language then reads a field the other does not have, and
++// the static_assert under each block says the two are meant to be one
++// type.
++//
++// An anonymous struct inside a union is a GNU extension in C++ rather than
++// standard, which is what GGML_EXTENSION is for -- it is __extension__ and
++// is already written on every aggregate here.  The other way round does
++// not work: naming them for C as well breaks the fifty-six places in the C
++// sources that read the members directly.
++#define GGML_COMMON_AGGR_U
++#define GGML_COMMON_AGGR_S
+ 
+ #define GGML_COMMON_DECL
+ #elif defined(GGML_COMMON_DECL_METAL)
+diff --git a/engine/ggml/src/ggml-cpu/repack.cpp b/engine/ggml/src/ggml-cpu/repack.cpp
+index 94b1dc910..a2d67726d 100644
+--- a/engine/ggml/src/ggml-cpu/repack.cpp
++++ b/engine/ggml/src/ggml-cpu/repack.cpp
+@@ -1019,11 +1019,11 @@ static block_q4_Kx8 make_block_q4_Kx8(block_q4_K * in, unsigned int blck_size_in
+     block_q4_Kx8 out;
+     //Delta(scale) and dmin values of the eight Q4_K structures are copied onto the output interleaved structure
+     for (int i = 0; i < 8; i++) {
+-        out.d[i] = in[i].GGML_COMMON_AGGR_U.GGML_COMMON_AGGR_S.d;
++        out.d[i] = in[i].d;
+     }
+ 
+     for (int i = 0; i < 8; i++) {
+-        out.dmin[i] = in[i].GGML_COMMON_AGGR_U.GGML_COMMON_AGGR_S.dmin;
++        out.dmin[i] = in[i].dmin;
+     }
+ 
+     const int end = QK_K * 4 / blck_size_interleave;
+@@ -1097,11 +1097,11 @@ static block_q2_Kx8 make_block_q2_Kx8(block_q2_K * in, unsigned int blck_size_in
+ 
+     // Delta(scale) and dmin values of the eight Q2_K structures are copied onto the output interleaved structure
+     for (int i = 0; i < 8; i++) {
+-        out.d[i] = in[i].GGML_COMMON_AGGR_U.GGML_COMMON_AGGR_S.d;
++        out.d[i] = in[i].d;
+     }
+ 
+     for (int i = 0; i < 8; i++) {
+-        out.dmin[i] = in[i].GGML_COMMON_AGGR_U.GGML_COMMON_AGGR_S.dmin;
++        out.dmin[i] = in[i].dmin;
+     }
+ 
+     const int end = QK_K * 2 / blck_size_interleave;
