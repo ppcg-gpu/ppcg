@@ -1,0 +1,72 @@
+# The units of llama-dspark that make one program, in the order they are
+# linked.
+#
+# The order is bytewise and is part of the list rather than left to
+# whoever runs it.  The first unit is the one the rest are linked into,
+# so the order decides which declarations are read and which are
+# imported, and what a link refuses changes with it: the same 52 units
+# refuse 238 in this order and 249 in the order the shell sorts them in,
+# which depends on the locale.
+#
+# 51 units.  What is left out, and why, is at the end.
+engine/ggml/src/ggml-alloc.c
+engine/ggml/src/ggml-backend-dl.cpp
+engine/ggml/src/ggml-backend-meta.cpp
+engine/ggml/src/ggml-backend-reg.cpp
+engine/ggml/src/ggml-backend.cpp
+engine/ggml/src/ggml-cpu/amx/amx.cpp
+engine/ggml/src/ggml-cpu/amx/mmq.cpp
+engine/ggml/src/ggml-cpu/arch/x86/quants.c
+engine/ggml/src/ggml-cpu/arch/x86/repack.cpp
+engine/ggml/src/ggml-cpu/binary-ops.cpp
+engine/ggml/src/ggml-cpu/ggml-cpu.c
+engine/ggml/src/ggml-cpu/ggml-cpu.cpp
+engine/ggml/src/ggml-cpu/hbm.cpp
+engine/ggml/src/ggml-cpu/llamafile/sgemm.cpp
+engine/ggml/src/ggml-cpu/ops.cpp
+engine/ggml/src/ggml-cpu/quants.c
+engine/ggml/src/ggml-cpu/repack.cpp
+engine/ggml/src/ggml-cpu/traits.cpp
+engine/ggml/src/ggml-cpu/unary-ops.cpp
+engine/ggml/src/ggml-cpu/vec.cpp
+engine/ggml/src/ggml-opt.cpp
+engine/ggml/src/ggml-quants.c
+engine/ggml/src/ggml-threading.cpp
+engine/ggml/src/ggml.c
+engine/ggml/src/ggml.cpp
+engine/ggml/src/gguf.cpp
+engine/src/llama-adapter.cpp
+engine/src/llama-arch.cpp
+engine/src/llama-batch.cpp
+engine/src/llama-chat.cpp
+engine/src/llama-context.cpp
+engine/src/llama-cparams.cpp
+engine/src/llama-grammar.cpp
+engine/src/llama-graph.cpp
+engine/src/llama-impl.cpp
+engine/src/llama-io.cpp
+engine/src/llama-kv-cache-dsv4.cpp
+engine/src/llama-kv-cache.cpp
+engine/src/llama-memory.cpp
+engine/src/llama-mmap.cpp
+engine/src/llama-model-loader.cpp
+engine/src/llama-model-saver.cpp
+engine/src/llama-model.cpp
+engine/src/llama-quant.cpp
+engine/src/llama-sampler.cpp
+engine/src/llama-vocab.cpp
+engine/src/llama.cpp
+engine/src/models/deepseek4.cpp
+engine/src/models/dsv4-block.cpp
+engine/src/unicode-data.cpp
+engine/src/unicode.cpp
+# Left out:
+#
+#   engine/src/models/dflash.cpp
+#
+# The drafter model.  It defines llama_model::load_arch_hparams,
+# save_arch_hparams and load_arch_tensors, and engine/src/models/
+# deepseek4.cpp defines the same three: two models, one set of methods,
+# and a build takes one of them.  Linked together they refuse 238
+# declarations where either alone refuses none, so this is the link
+# answering correctly a question that should not have been asked.
