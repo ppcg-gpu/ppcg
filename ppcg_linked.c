@@ -381,12 +381,21 @@ static int transform_unit(isl_ctx *ctx, const char *unit,
  *
  * The scops are grouped by the file they were written in, which their
  * pet_loc names, and each group is sorted by where it stands.
+ *
+ * A scop that does not say where it was written is passed over.  There
+ * is no unit to put it in and nothing to be done about it here, and it
+ * used to stop the run: over 47 units of llama-dspark one such scop
+ * meant that none of the other units were written out at all, after
+ * sixteen minutes of work on them.  How many there were is said at the
+ * end, since it is a thing worth knowing and not a thing worth losing
+ * the run over.
  */
 static int transform_units(isl_ctx *ctx, struct collected *c,
 	struct ppcg_options *options, const char *dir)
 {
 	int i, j;
 	int r = 0;
+	int placeless = 0;
 
 	for (i = 0; i < c->n && r == 0; ++i) {
 		char *unit;
@@ -396,11 +405,10 @@ static int transform_units(isl_ctx *ctx, struct collected *c,
 		if (!c->scop[i])
 			continue;
 		if (!pet_loc_get_filename(c->scop[i]->loc)) {
-			fprintf(stderr, "a scop does not say which file it "
-				"was written in; the units have to be "
-				"serialised by pet_emit_ast\n");
-			r = -1;
-			break;
+			++placeless;
+			pet_scop_free(c->scop[i]);
+			c->scop[i] = NULL;
+			continue;
 		}
 		unit = strdup(pet_loc_get_filename(c->scop[i]->loc));
 		group = calloc(c->n, sizeof(struct pet_scop *));
@@ -433,6 +441,10 @@ static int transform_units(isl_ctx *ctx, struct collected *c,
 		free(group);
 		free(unit);
 	}
+
+	if (placeless)
+		fprintf(stderr, "%d scop(s) did not say which file they were "
+			"written in and were passed over\n", placeless);
 
 	return r;
 }
@@ -510,23 +522,41 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 	if (pet_linked_ast_n_refused(linked) != 0) {
-		int i, n_refused = pet_linked_ast_n_refused(linked);
+		int n_refused = pet_linked_ast_n_refused(linked);
 
-		fprintf(stderr, "%s: %d declaration(s) could not be linked\n",
-			argv[0], n_refused);
-		for (i = 0; i < n_refused; ++i)
-			fprintf(stderr, "  %s: %s\n",
-				pet_linked_ast_refused(linked, i),
-				pet_linked_ast_refused_why(linked, i));
-		/* A refusal is fatal here, unlike in a map: the code that
-		 * comes out is compiled and run, and a declaration that did
-		 * not cross means the program that is generated is not the
-		 * program that was given.  Saying so beats writing out
-		 * something that quietly computes something else.
+		/* A refusal costs a chance and not the program.  What is
+		 * refused is a declaration that did not become one entity
+		 * with the target's, and what depends on that is whether a
+		 * call can find the body it names: found, the body is put
+		 * in place of the call; not found, the call stays a call,
+		 * which is what the source said in the first place.  The
+		 * code that comes out is the program that was given either
+		 * way, transformed in fewer places.
+		 *
+		 * It was fatal here, on the grounds that a declaration
+		 * which did not cross means the program generated is not
+		 * the program given.  Over C++ that stops everything and
+		 * buys nothing: linking llama-dspark refuses 14124
+		 * declarations, nearly all of them the standard library's
+		 * templates seen from more than one unit, and not one of
+		 * them is a body a scop was going to reach.
+		 *
+		 * The names are behind PPCG_LINK_REFUSED, as pet puts its
+		 * own account of the link behind PET_LINK_WHY: fourteen
+		 * thousand lines of them is not a thing to print at
+		 * somebody who asked for code.
 		 */
-		pet_ast_link_free(linked);
-		isl_ctx_free(ctx);
-		return EXIT_FAILURE;
+		fprintf(stderr, "%s: %d declaration(s) could not be linked; "
+			"calls to them are left as calls\n",
+			argv[0], n_refused);
+		if (getenv("PPCG_LINK_REFUSED")) {
+			int i;
+
+			for (i = 0; i < n_refused; ++i)
+				fprintf(stderr, "  %s: %s\n",
+					pet_linked_ast_refused(linked, i),
+					pet_linked_ast_refused_why(linked, i));
+		}
 	}
 
 	r = pet_linked_ast_foreach_scop(ctx, linked, &collect, &c);
