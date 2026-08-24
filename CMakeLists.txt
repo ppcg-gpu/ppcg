@@ -533,6 +533,95 @@ foreach(test_file ${DEADCODE_FILES})
 endforeach()
 
 #--------------------------------------------------------------------
+# Whole program translation
+#
+# What ppcg_linked is for, checked by running what it generated: a call
+# that crosses a translation unit, with a body put in place of it that no
+# ordinary ppcg run over either file alone could reach.
+#
+# The two units are translated together and compiled next to a plain
+# build of the same sources.  Both builds use the same driver, which is
+# never translated, for the reason the dead code tests give: pet leaves a
+# call that only prints out of the scop, so a translated driver would
+# print nothing and the comparison would hold for the wrong reason.
+#
+# The corpus is chosen so the numbers differ when a body is bound to the
+# wrong declaration's parameters -- see tests/linked/scale_use.c.
+#--------------------------------------------------------------------
+
+set(LINKED_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tests/linked)
+set(RUN_LINKED_TRANSLATE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunLinkedTranslate.cmake)
+
+function(add_linked_test name units)
+    set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/tests/linked/${name}")
+    string(REPLACE "|" ";" unit_list "${units}")
+
+    set(sources "")
+    set(generated "")
+    foreach(unit ${unit_list})
+        list(APPEND sources "${LINKED_DIR}/${unit}.c")
+        list(APPEND generated "${output_dir}/${unit}.ppcg.c")
+    endforeach()
+    set(driver "${LINKED_DIR}/drivers/driver.c")
+
+    set(reference linked_${name}_ref)
+    add_executable(${reference} ${sources} ${driver})
+    target_include_directories(${reference} PRIVATE ${LINKED_DIR})
+    set_target_properties(${reference} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${output_dir}
+        C_STANDARD 99
+        C_EXTENSIONS ON
+    )
+
+    add_custom_command(OUTPUT ${generated}
+        COMMAND ${CMAKE_COMMAND}
+            -DEMITTER=$<TARGET_FILE:pet_emit_ast>
+            -DDRIVER=$<TARGET_FILE:ppcg_linked>
+            -DSRCDIR=${LINKED_DIR}
+            -DBINDIR=${output_dir}
+            -DUNITS=${units}
+            -DTIMEOUT_S=60
+            -P ${RUN_LINKED_TRANSLATE}
+        DEPENDS ppcg_linked pet_emit_ast ${sources} ${RUN_LINKED_TRANSLATE}
+        COMMENT "Translating ${name} as one program"
+        VERBATIM
+    )
+
+    set(candidate linked_${name}_cand)
+    add_executable(${candidate} ${generated} ${driver})
+    target_include_directories(${candidate} PRIVATE ${LINKED_DIR})
+    set_target_properties(${candidate} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${output_dir}
+        C_STANDARD 99
+        C_EXTENSIONS ON
+    )
+
+    add_test(NAME LinkedTranslate_${name}
+        COMMAND ${CMAKE_COMMAND}
+            -DEMITTER=$<TARGET_FILE:pet_emit_ast>
+            -DDRIVER=$<TARGET_FILE:ppcg_linked>
+            -DSRCDIR=${LINKED_DIR}
+            -DBINDIR=${output_dir}/timed
+            -DUNITS=${units}
+            -DTIMEOUT_S=60
+            -P ${RUN_LINKED_TRANSLATE}
+    )
+    set_tests_properties(LinkedTranslate_${name} PROPERTIES TIMEOUT 120)
+
+    add_test(NAME LinkedRun_${name}
+        COMMAND ${CMAKE_COMMAND}
+            -DREFERENCE=$<TARGET_FILE:${reference}>
+            -DCANDIDATE=$<TARGET_FILE:${candidate}>
+            -DOUTPUT_DIR=${output_dir}
+            "-DCOMPARE=${Python3_EXECUTABLE}|${COMPARE_OUTPUTS}"
+            -P ${RUN_AND_COMPARE}
+    )
+    set_tests_properties(LinkedRun_${name} PROPERTIES TIMEOUT 60)
+endfunction()
+
+add_linked_test(scale "scale_lib|scale_use")
+
+#--------------------------------------------------------------------
 # OpenCL tests
 #--------------------------------------------------------------------
 
