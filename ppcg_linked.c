@@ -20,14 +20,21 @@
  * does not compile.
  */
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <isl/arg.h>
 #include <isl/ctx.h>
+#include <isl/id.h>
 #include <isl/options.h>
 #include <isl/printer.h>
+#include <isl/set.h>
+#include <isl/union_map.h>
+#include <isl/union_set.h>
 
 #include <pet.h>
 
@@ -149,22 +156,115 @@ static int by_start(const void *a, const void *b)
 	return ua < ub ? -1 : ua > ub ? 1 : 0;
 }
 
-/* Name the file the transformed "unit" is written to: its own name with
- * ".ppcg" put before the extension, inside "dir".
+/* Does "set" stand for an array the program itself has?
+ *
+ * pet names the arrays it invents, and tells its own apart by the name:
+ * see pet_id_is_arg_or_ret, which asks the same question of __pet_arg
+ * and __pet_ret.  A condition that was encapsulated is written to a
+ * __pet_test of the same kind.  The ValueDecl behind an id would be a
+ * better thing to ask, but it does not survive as far as here: every
+ * array reaching this point, invented or not, carries an id with nothing
+ * behind it.
  */
-static void output_name(char *out, size_t size, const char *dir,
+static isl_stat note_real_write(__isl_take isl_set *set, void *user)
+{
+	int *real = user;
+	isl_id *id;
+	const char *name;
+
+	id = isl_set_get_tuple_id(set);
+	name = id ? isl_id_get_name(id) : NULL;
+	if (name && strncmp(name, "__pet_test", 10) != 0)
+		*real = 1;
+	isl_id_free(id);
+	isl_set_free(set);
+
+	return isl_stat_ok;
+}
+
+/* Is everything "scop" writes an array pet made up?
+ *
+ * Encapsulating dynamic control turns a condition into a write to a
+ * variable pet invents, so that what the control depended on can be
+ * spoken about.  Where the control it belongs to is inside the scop,
+ * that is an intermediate step and the code that comes out says nothing
+ * about it.  Where the scop is the encapsulation and nothing else --
+ * autodetection over a real function finds these, a single break in the
+ * middle of a loop being enough -- the code that comes out is a write to
+ * a variable that appears nowhere in the program, in place of the
+ * control it stood for.  It neither compiles nor means what was written.
+ *
+ * Such a scop is left as it was written.  There is nothing in it to
+ * generate: what it describes is not a computation the program does, it
+ * is what pet needed in order to describe a computation elsewhere.
+ */
+static int writes_nothing_real(struct pet_scop *scop)
+{
+	isl_union_set *written;
+	int real = 0;
+
+	written = isl_union_map_range(pet_scop_get_may_writes(scop));
+	if (!written)
+		return 0;
+	if (isl_union_set_foreach_set(written, &note_real_write, &real) < 0)
+		real = 1;
+	isl_union_set_free(written);
+
+	return !real;
+}
+
+/* Make "path" and every directory above it, as far as they are missing.
+ *
+ * Used to place a unit's output under a directory of its own, so it is
+ * the caller of output_name that has to have made the way to it.
+ */
+static int make_way(char *path)
+{
+	char *slash;
+
+	for (slash = path + 1; (slash = strchr(slash, '/')); ++slash) {
+		*slash = '\0';
+		if (mkdir(path, 0777) < 0 && errno != EEXIST) {
+			fprintf(stderr, "unable to make %s\n", path);
+			*slash = '/';
+			return -1;
+		}
+		*slash = '/';
+	}
+
+	return 0;
+}
+
+/* Name the file the transformed "unit" is written to: its own name with
+ * ".ppcg" put before the extension, under "dir", and under as much of
+ * the unit's own path as it was given.
+ *
+ * The path is kept and not just the last part of it.  A program of any
+ * size has two units of one name -- llama-dspark has a quants.c and a
+ * repack.cpp twice over, once for the machine it is built for and once
+ * for the plain version -- and naming the output after the last part
+ * alone puts both in one file, where the second silently replaces the
+ * first.  Two units of the corpus would then never reach the compiler
+ * and what was built would not be the program that was read.
+ */
+static int output_name(char *out, size_t size, const char *dir,
 	const char *unit)
 {
-	const char *base, *ext;
+	const char *ext;
 	size_t len;
 
-	base = strrchr(unit, '/');
-	base = base ? base + 1 : unit;
-	ext = strrchr(base, '.');
-	len = ext ? (size_t) (ext - base) : strlen(base);
+	ext = strrchr(unit, '.');
+	if (ext && strchr(ext, '/'))
+		ext = NULL;
+	len = ext ? (size_t) (ext - unit) : strlen(unit);
 
-	snprintf(out, size, "%s/%.*s.ppcg%s", dir, (int) len, base,
+	while (*unit == '/')
+		++unit, --len;
+
+	snprintf(out, size, "%s/%.*s.ppcg%s", dir, (int) len, unit,
 		ext ? ext : ".c");
+
+	return make_way(out);
 }
 
 /* Write "unit" out with the scops in "scop" replaced by generated code.
@@ -172,6 +272,19 @@ static void output_name(char *out, size_t size, const char *dir,
  * The scops are the ones that were written in this unit, already in the
  * order they stand in it.  Between them, and before the first and after
  * the last, the text of the unit is copied over as it was written.
+ *
+ * A scop that no code comes back for leaves its own text standing.  Not
+ * every scop a linked AST holds can be scheduled -- an array whose
+ * extent cannot be determined is enough -- and a unit is a whole file
+ * that has to compile, so one scop is not worth the other thousand
+ * lines around it.  Abandoning the file there is what used to happen,
+ * and it left the unit cut off in the middle of a function: 89 lines
+ * written of ggml-alloc.c's 1248, ending inside the body of the
+ * function whose scop had failed.
+ *
+ * Each scop is printed to a string first for that reason.  Printing
+ * straight to the file would have put whatever the printer managed
+ * before it gave up in front of the text that then has to replace it.
  */
 static int transform_unit(isl_ctx *ctx, const char *unit,
 	struct pet_scop **scop, int n, struct ppcg_options *options,
@@ -179,9 +292,9 @@ static int transform_unit(isl_ctx *ctx, const char *unit,
 {
 	char name[4096];
 	FILE *in, *out;
-	isl_printer *p;
 	long end = 0;
 	int i, r = 0;
+	int left = 0;
 
 	in = fopen(unit, "r");
 	if (!in) {
@@ -189,7 +302,10 @@ static int transform_unit(isl_ctx *ctx, const char *unit,
 		return -1;
 	}
 
-	output_name(name, sizeof(name), dir, unit);
+	if (output_name(name, sizeof(name), dir, unit) < 0) {
+		fclose(in);
+		return -1;
+	}
 	out = fopen(name, "w");
 	if (!out) {
 		fprintf(stderr, "unable to write %s\n", name);
@@ -197,34 +313,61 @@ static int transform_unit(isl_ctx *ctx, const char *unit,
 		return -1;
 	}
 
-	p = isl_printer_to_file(ctx, out);
-	p = isl_printer_set_output_format(p, ISL_FORMAT_C);
-
 	for (i = 0; i < n; ++i) {
 		unsigned start = pet_loc_get_start(scop[i]->loc);
+		unsigned stop = pet_loc_get_end(scop[i]->loc);
+		isl_printer *p;
+		char *text;
 
 		if (copy_range(in, out, end, start) < 0) {
 			r = -1;
 			break;
 		}
-		end = pet_loc_get_end(scop[i]->loc);
+
+		p = isl_printer_to_str(ctx);
+		p = isl_printer_set_output_format(p, ISL_FORMAT_C);
 		p = isl_printer_set_indent_prefix(p,
 					pet_loc_get_indent(scop[i]->loc));
-		p = ppcg_transform_scop(p, scop[i], options,
-					&print_cpu_wrap, options);
-		scop[i] = NULL;
-		if (!p) {
-			fprintf(stderr, "%s: nothing came back for the scop "
-				"at %u\n", unit, start);
-			r = -1;
-			break;
+		if (writes_nothing_real(scop[i])) {
+			isl_printer_free(p);
+			p = NULL;
+			pet_scop_free(scop[i]);
+		} else {
+			p = ppcg_transform_scop(p, scop[i], options,
+						&print_cpu_wrap, options);
 		}
+		scop[i] = NULL;
+		text = p ? isl_printer_get_str(p) : NULL;
+		isl_printer_free(p);
+
+		if (text) {
+			size_t len = strlen(text);
+
+			if (fwrite(text, 1, len, out) != len)
+				r = -1;
+			free(text);
+			if (r < 0)
+				break;
+		} else {
+			fprintf(stderr, "%s: nothing came back for the scop "
+				"at %u; it is left as it was written\n",
+				unit, start);
+			++left;
+			if (copy_range(in, out, start, stop) < 0) {
+				r = -1;
+				break;
+			}
+		}
+		end = stop;
 	}
+
+	if (left)
+		fprintf(stderr, "%s: %d scop(s) left as written\n",
+			unit, left);
 
 	if (r == 0 && copy_range(in, out, end, -1) < 0)
 		r = -1;
 
-	isl_printer_free(p);
 	fclose(out);
 	fclose(in);
 
