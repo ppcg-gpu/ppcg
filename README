@@ -1,3 +1,34 @@
+Whole program:
+
+  This tree links the ASTs of many translation units into one and
+  generates code from the result, rather than reading one source file at
+  a time.  It is far enough along to make a working ELF out of a linked
+  AST: 51 units of llama-dspark -- llama, ggml, ggml-base and ggml-cpu,
+  C and C++ together -- link with nothing refused, become one module of
+  28600 functions, and assemble into one shared library holding all 1965
+  symbols the four libraries of the ordinary build hold.  The project's
+  own test suite passes against that library, 31 of its 32 tests; the
+  one that does not fails the same way on the ordinary build.
+
+  What that means and does not mean.  The library is a real ELF and the
+  tests that exercise it are the project's own, so the code generated
+  from the linked AST computes what the code compiled the usual way
+  computes.  It does not mean the polyhedral transformation has been
+  applied across unit boundaries at scale -- that is what this makes
+  possible, and it is the next thing.  Nor is it a claim about any
+  program other than the one measured.
+
+  Reproducing it is one call, and tests/whole-program/README.md is where
+  it is written down:
+
+      tests/whole-program/verify.py --ppcg-build DIR --clang DIR \
+                                    --llama DIR
+
+  It needs a clang carrying the patches in ThirdParty/pet/llvm-patches,
+  which that directory's README describes: linking two units' ASTs asks
+  things of clang's importer that it was not written to answer, and six
+  of those answers cannot live outside clang.
+
 Requirements:
 
 - cmake, 3.21 or higher (https://cmake.org/)
