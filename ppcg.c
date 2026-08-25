@@ -1082,6 +1082,15 @@ __isl_give isl_printer *ppcg_transform_scop(__isl_take isl_printer *p,
 
 	scop = pet_scop_align_params(scop);
 	ps = ppcg_scop_from_pet_scop(scop, options);
+	if (!ps) {
+		/* Nothing came of the scop, so there is nothing to hand
+		 * the callback: every one of them reads what it is given.
+		 * Freeing the printer says so in the way the callers of
+		 * this function already answer a scop they cannot use.
+		 */
+		pet_scop_free(scop);
+		return isl_printer_free(p);
+	}
 
 	if (options->debug->dump_reductions) {
 		struct ppcg_reductions *reductions;
