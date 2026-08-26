@@ -147,7 +147,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--expect-units", type=int, default=51)
     ap.add_argument("--expect-refused", type=int, default=0)
-    ap.add_argument("--expect-records", type=int, default=277)
+    ap.add_argument("--expect-records", type=int, default=279)
     ap.add_argument("--expect-missing", type=int, default=0)
     args = ap.parse_args()
 

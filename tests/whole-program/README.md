@@ -74,6 +74,31 @@ A run looks like this:
 
     verify: the whole-program path holds
 
+## The record count is 279, and what moved it
+
+That run reported 277 records and the expectation was written from it.
+It is 279 now, and the two are not a loss or a gain in the link: they
+are `llama-dspark-one-record-shape.patch`, which had not yet become
+required when the number was first written down.  Without it
+`ggml-common.h` describes one record two ways; with it, one way, and
+two more records reach the module.
+
+Measured rather than reasoned about, because the obvious suspects were
+wrong.  pet had taken two commits about records and unions in between --
+"Read an annotation saying which arrays are one piece of storage" and
+"Let a member begin before the representative" -- and they look like the
+answer and are not it:
+
+    corpus emitted against    pet             records
+    the tree unpatched        before both     277
+    the tree unpatched        after both      277
+    the tree patched          after both      279
+
+Both versions of pet agree on one corpus.  What differs is the corpus,
+and what differs in the corpus is that patch.  So `--expect-records`
+defaults to 279, and a run that reports 277 is being made against a tree
+the record shape patch has not been applied to.
+
 `--reuse-corpus` reads a corpus that is already there instead of writing
 it again, which saves the six seconds and is where the one real trap
 lives: a serialised AST can be read only by the build of clang that
