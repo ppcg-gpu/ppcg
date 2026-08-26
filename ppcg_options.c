@@ -123,6 +123,42 @@ ISL_ARG_BOOL(struct ppcg_options, live_range_reordering, 0,
 	"live-range-reordering", 1,
 	"allow successive live ranges on the same memory element "
 	"to be reordered")
+/* WORK MAY NOT LEAVE A SCOP WITHOUT A WORD.
+ *
+ * Dead-code elimination used to print under --verbose, to stdout, and carry
+ * on.  Twice on one tree in one session that was the only trace of storage
+ * this tool had misread: a store into the caller's memory through a union
+ * member vanished, and a kernel whose windows were typed local pointers lost
+ * both of its loops -- 8192 instances -- while the exit status stayed 0.
+ * The report is therefore unconditional and on stderr.
+ *
+ * STOPPING, though, is not the default, and that was measured rather than
+ * chosen.  ppcg's own examples/chemv.c legitimately loses statements under
+ * incY <= 0 -- the arrays are pet's own varNN_Re and varNN_Im temporaries --
+ * so a fatal default breaks correct input, and broke ppcg's own build in
+ * three targets before this flag existed.  Removing dead code is neither an
+ * inability nor an error; it is a transformation that must be SEEN.  A
+ * caller who knows its scop should lose nothing asks to stop.
+ */
+ISL_ARG_BOOL(struct ppcg_options, stop_on_dead_code, 0,
+	"stop-on-dead-code", 0,
+	"stop when statement instances are eliminated as dead; the "
+	"elimination is reported either way")
+/* A SCOP THAT COMES BACK UNSCHEDULED IS A REFUSAL, NOT A RESULT.
+ *
+ * Copying the input to the output with its pragma intact and exiting 0 says
+ * "success" to anything that reads the exit status and says nothing at all
+ * to anything that reads the file.  Measured: a 402-node scop went from 316
+ * parallel bands to 0 that way, in ninety seconds instead of thirty-three
+ * minutes, and the only trace was an isl assertion buried in unrelated
+ * output.  The harness in llama-dspark had already learned to test for the
+ * pragma instead of the exit code, which is what a workaround for this looks
+ * like.
+ */
+ISL_ARG_BOOL(struct ppcg_options, allow_unscheduled, 0,
+	"allow-unscheduled", 0,
+	"copy the input to the output when it cannot be scheduled instead "
+	"of stopping; the reason is reported either way")
 ISL_ARG_BOOL(struct ppcg_options, hybrid, 0, "hybrid", 0,
 	"apply hybrid tiling whenever a suitable input pattern is found "
 	"(GPU targets)")

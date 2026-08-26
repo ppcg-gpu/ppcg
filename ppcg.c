@@ -784,32 +784,94 @@ static void report_empty_context(struct ppcg_scop *ps)
 		"under specified conditions\n");
 }
 
-/* Report the eliminated dead code,
- * if there is any and if the verbose option is set.
+/* Report the eliminated dead code, and refuse to continue unless the
+ * caller has said that losing statements is acceptable.
+ *
+ * NOTHING LEAVES A SCOP WITHOUT A WORD.  This used to print under --verbose
+ * and to stdout, which is a comment rather than a diagnostic: a run that
+ * dropped work looked exactly like a run that did not.  Measured twice in
+ * one session on the same tree.  A union member reached through a pointer
+ * lost the store into it -- "Eliminated dead instances: { S_2[] }" for a
+ * write to the caller's memory -- and a kernel whose windows were typed
+ * local pointers lost both of its loops, 8192 instances, while ppcg exited
+ * 0 and removed the pragma, so every check that asks "was it scheduled"
+ * answered yes.  Both were mismodelled storage, and in both the elimination
+ * was the only trace of it.
+ *
+ * Dead code that is genuinely dead does exist, so this is an option rather
+ * than a law -- but the default is to stop, because the cost of stopping is
+ * a flag and the cost of continuing is a wrong answer that looks right.
+ *
+ * Returns 0 if the run may continue and -1 if it may not.
  */
-static void report_dead_code(struct ppcg_scop *ps,
+/* Collect the name of the array "set" belongs to.
+ */
+static isl_stat collect_array_name(__isl_take isl_set *set, void *user)
+{
+	isl_printer **p = user;
+	const char *name = isl_set_get_tuple_name(set);
+
+	*p = isl_printer_print_str(*p, name ? name : "?");
+	*p = isl_printer_print_str(*p, " ");
+	isl_set_free(set);
+
+	return isl_stat_ok;
+}
+
+static int report_dead_code(struct ppcg_scop *ps,
 	__isl_keep isl_union_set *live)
 {
 	isl_ctx *ctx;
 	isl_printer *p;
 	isl_union_set *dead;
+	isl_union_map *lost;
+	isl_union_set *arrays;
 
-	if (!ps->options->debug->verbose)
-		return;
 	if (isl_union_set_is_equal(ps->domain, live))
-		return;
+		return 0;
 
 	ctx = isl_union_set_get_ctx(live);
 	dead = isl_union_set_subtract(isl_union_set_copy(ps->domain),
 					isl_union_set_copy(live));
 
-	p = isl_printer_to_file(ctx, stdout);
-	p = isl_printer_print_str(p, "Eliminated dead instances: ");
+	p = isl_printer_to_file(ctx, stderr);
+	p = isl_printer_print_str(p, ps->options->stop_on_dead_code ?
+			"ppcg: STATEMENTS WOULD BE LOST: " :
+			"ppcg: eliminated dead instances: ");
 	p = isl_printer_print_union_set(p, dead);
 	p = isl_printer_end_line(p);
+
+	/* WHICH ARRAYS LOSE A WRITE, not merely which statements go.
+	 *
+	 * A list of statement names cannot be classified without mapping it
+	 * back through the generated C by hand.  The arrays can be: a write
+	 * to a buffer the scop declared itself and never reads again is dead
+	 * code, and a write to a buffer that came in as a parameter is a
+	 * store into the caller's memory that this tool has decided nobody
+	 * wants.  Those are different findings and only the second is a
+	 * defect, so the report names them rather than leaving the reader to
+	 * count statement numbers.
+	 */
+	lost = isl_union_map_intersect_domain(
+			isl_union_map_copy(ps->may_writes),
+			isl_union_set_copy(dead));
+	arrays = isl_union_map_range(lost);
+	p = isl_printer_print_str(p, "ppcg: arrays losing a write: ");
+	isl_union_set_foreach_set(arrays, &collect_array_name, &p);
+	p = isl_printer_end_line(p);
+	isl_union_set_free(arrays);
+
+	if (ps->options->stop_on_dead_code) {
+		p = isl_printer_print_str(p, "ppcg: these instances write to "
+			"storage nothing later reads, and --stop-on-dead-code "
+			"says this scop should lose nothing, so it stops.");
+		p = isl_printer_end_line(p);
+	}
 	isl_printer_free(p);
 
 	isl_union_set_free(dead);
+
+	return ps->options->stop_on_dead_code ? -1 : 0;
 }
 
 /* Eliminate dead code from ps->domain.
@@ -855,7 +917,7 @@ static void report_dead_code(struct ppcg_scop *ps,
  * demands stayed strictly larger, and the subset test that ended the
  * loop could never become true.
  */
-static void eliminate_dead_code(struct ppcg_scop *ps)
+static int eliminate_dead_code(struct ppcg_scop *ps)
 {
 	isl_union_set *live, *roots;
 	isl_union_map *dep;
@@ -889,7 +951,10 @@ static void eliminate_dead_code(struct ppcg_scop *ps)
 	live = isl_union_set_intersect(live, isl_union_set_copy(ps->domain));
 	live = isl_union_set_coalesce(live);
 
-	report_dead_code(ps, live);
+	if (report_dead_code(ps, live) < 0) {
+		isl_union_set_free(live);
+		return -1;
+	}
 
 	ps->domain = isl_union_set_intersect(ps->domain,
 						isl_union_set_copy(live));
@@ -901,6 +966,8 @@ static void eliminate_dead_code(struct ppcg_scop *ps)
 	live = isl_union_set_preimage_union_pw_multi_aff(live, tagger);
 	ps->tagged_dep_flow = isl_union_map_intersect_range(ps->tagged_dep_flow,
 						live);
+
+	return 0;
 }
 
 /* Intersect "set" with the set described by "str", taking the NULL
@@ -1014,7 +1081,8 @@ static struct ppcg_scop *ppcg_scop_from_pet_scop(struct pet_scop *scop,
 
 	compute_tagger(ps);
 	compute_dependences(ps);
-	eliminate_dead_code(ps);
+	if (eliminate_dead_code(ps) < 0)
+		return ppcg_scop_free(ps);
 
 	if (!ps->context || !ps->domain || !ps->call || !ps->ret || !ps->reads ||
 	    !ps->may_writes || !ps->must_writes || !ps->tagged_must_kills ||
@@ -1037,24 +1105,49 @@ struct ppcg_transform_data {
  * That is, does "scop" involve any data dependent conditions or
  * nested expressions that cannot be handled by pet_stmt_build_ast_exprs?
  */
-static int print_original(struct pet_scop *scop, struct ppcg_options *options)
+/* Would the transformed program have to be abandoned and the input printed
+ * back instead, and if so, say why.
+ *
+ * A SCOP THAT COMES BACK UNSCHEDULED IS A REFUSAL, NOT A RESULT.  Both of
+ * these used to whisper under --verbose, to stdout, and then the input was
+ * copied to the output with its pragma intact and ppcg exited 0.  A caller
+ * who looks at the exit status sees success; a caller who looks at the file
+ * sees C.  Measured on a 402-node scop: 316 parallel bands became 0 in
+ * ninety seconds instead of thirty-three minutes, and the only trace was an
+ * isl assertion in the middle of thirty-seven kilobytes of unrelated output.
+ * tests/ppcg in llama-dspark had already learned to test for the pragma
+ * rather than the exit code, which is the shape of a workaround for exactly
+ * this.
+ *
+ * Returns 1 if the original is to be printed and 0 otherwise; sets *fatal
+ * when the caller should stop rather than print anything.
+ */
+static int print_original(struct pet_scop *scop, struct ppcg_options *options,
+	int *fatal)
 {
-	if (!pet_scop_can_build_ast_exprs(scop)) {
-		if (options->debug->verbose)
-			fprintf(stdout, "Printing original code because "
-				"some index expressions cannot currently "
-				"be printed\n");
-		return 1;
+	const char *why = NULL;
+
+	if (!pet_scop_can_build_ast_exprs(scop))
+		why = "some index expressions cannot be printed";
+	else if (pet_scop_has_data_dependent_conditions(scop))
+		why = "the input involves data dependent conditions";
+
+	if (!why)
+		return 0;
+
+	fprintf(stderr, "ppcg: %s: %s\n",
+		options->allow_unscheduled ?
+			"printing the original code because" :
+			"REFUSING TO SCHEDULE because", why);
+	if (!options->allow_unscheduled) {
+		fprintf(stderr, "ppcg: the input would be copied to the "
+			"output unchanged, which is a refusal wearing the "
+			"shape of a result.  Pass --allow-unscheduled to get "
+			"the copy anyway.\n");
+		*fatal = 1;
 	}
 
-	if (pet_scop_has_data_dependent_conditions(scop)) {
-		if (options->debug->verbose)
-			fprintf(stdout, "Printing original code because "
-				"input involves data dependent conditions\n");
-		return 1;
-	}
-
-	return 0;
+	return 1;
 }
 
 /* Turn "scop" into a ppcg_scop and hand it to "fn", printing to "p".
@@ -1073,9 +1166,13 @@ __isl_give isl_printer *ppcg_transform_scop(__isl_take isl_printer *p,
 		struct ppcg_scop *scop, void *user), void *user)
 {
 	struct ppcg_scop *ps;
+	int fatal = 0;
 
-	if (print_original(scop, options)) {
-		p = pet_scop_print_original(scop, p);
+	if (print_original(scop, options, &fatal)) {
+		if (!fatal)
+			p = pet_scop_print_original(scop, p);
+		else
+			p = isl_printer_free(p);
 		pet_scop_free(scop);
 		return p;
 	}

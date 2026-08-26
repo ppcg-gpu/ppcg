@@ -63,6 +63,19 @@ struct ppcg_options {
 	/* Allow live range to be reordered. */
 	int live_range_reordering;
 
+	/* Continue when statement instances are eliminated as dead, instead
+	 * of stopping.  The elimination is reported either way.
+	 */
+	/* Stop when statement instances are eliminated as dead.  The
+	 * elimination is reported either way.
+	 */
+	int stop_on_dead_code;
+
+	/* Copy the input to the output when it cannot be scheduled, instead
+	 * of stopping.  The reason is reported either way.
+	 */
+	int allow_unscheduled;
+
 	/* Allow hybrid tiling whenever a suitable input pattern is found. */
 	int hybrid;
 
