@@ -96,6 +96,16 @@ struct ppcg_scop {
 	isl_union_map *may_writes;
 	isl_union_map *tagged_must_writes;
 	isl_union_map *must_writes;
+	/* The same writes over the arrays the source names rather than the
+	 * storage representative an annotation composed them into.  Only
+	 * compute_live_out reads these: a kill analysis over the composed
+	 * relations sees a later member's write covering an earlier member's
+	 * write and kills computation the caller can still reach through
+	 * the earlier array.  In a scop without an annotation these are
+	 * equal to may_writes/must_writes.
+	 */
+	isl_union_map *plain_may_writes;
+	isl_union_map *plain_must_writes;
 	isl_union_map *live_out;
 	isl_union_map *tagged_must_kills;
 	isl_union_map *must_kills;

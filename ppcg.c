@@ -383,19 +383,34 @@ static void compute_live_out(struct ppcg_scop *ps)
 	isl_union_access_info *access;
 	isl_union_flow *flow;
 
+	/* THE PLAIN WRITES, NOT THE COMPOSED ONES.
+	 *
+	 * An annotation composes every member of a storage group onto one
+	 * representative array, which is right for the dependence analysis
+	 * and wrong here: subtracting kills from may-writes over the
+	 * composed relations lets a later member's write cover an earlier
+	 * member's write, and the earlier computation is classified dead
+	 * even though the caller can still reach it through the array that
+	 * wrote it.  Measured on the 402-node scop: nine of the eleven
+	 * parameters losing writes were the representatives the pragmas
+	 * named first, and the scheduler died in "unable to carry
+	 * dependences" with zero bands.  Liveness is a property of what the
+	 * caller sees through each array, so it is judged over the arrays
+	 * the source names.
+	 */
 	schedule = isl_schedule_copy(ps->schedule);
-	kills = isl_union_map_union(isl_union_map_copy(ps->must_writes),
+	kills = isl_union_map_union(isl_union_map_copy(ps->plain_must_writes),
 				    isl_union_map_copy(ps->must_kills));
 	access = isl_union_access_info_from_sink(kills);
 	access = isl_union_access_info_set_may_source(access,
-				    isl_union_map_copy(ps->may_writes));
+				    isl_union_map_copy(ps->plain_may_writes));
 	access = isl_union_access_info_set_schedule(access, schedule);
 	flow = isl_union_access_info_compute_flow(access);
 	covering = isl_union_flow_get_full_may_dependence(flow);
 	isl_union_flow_free(flow);
 
 	covering = isl_union_map_range_factor_range(covering);
-	exposed = isl_union_map_copy(ps->may_writes);
+	exposed = isl_union_map_copy(ps->plain_may_writes);
 	exposed = isl_union_map_subtract(exposed, covering);
 	ps->live_out = exposed;
 }
@@ -1215,6 +1230,8 @@ static void *ppcg_scop_free(struct ppcg_scop *ps)
 	isl_union_map_free(ps->tagged_must_writes);
 	isl_union_map_free(ps->may_writes);
 	isl_union_map_free(ps->must_writes);
+	isl_union_map_free(ps->plain_may_writes);
+	isl_union_map_free(ps->plain_must_writes);
 	isl_union_map_free(ps->live_out);
 	isl_union_map_free(ps->tagged_must_kills);
 	isl_union_map_free(ps->must_kills);
@@ -1275,6 +1292,22 @@ static struct ppcg_scop *ppcg_scop_from_pet_scop(struct pet_scop *scop,
 	ps->may_writes = pet_scop_get_may_writes(scop);
 	ps->tagged_must_writes = pet_scop_get_tagged_must_writes(scop);
 	ps->must_writes = pet_scop_get_must_writes(scop);
+	ps->plain_may_writes = pet_scop_get_plain_may_writes(scop);
+	ps->plain_must_writes = pet_scop_get_plain_must_writes(scop);
+	if (ps->plain_may_writes && ps->plain_must_writes &&
+	    isl_union_map_is_empty(ps->plain_may_writes)) {
+		/* No annotation composed anything: the plain view is the
+		 * composed view, and pet's scop-local temporaries -- which a
+		 * kill at the end of the scop would remove from the composed
+		 * one too -- are not in it.
+		 */
+		isl_union_map_free(ps->plain_may_writes);
+		isl_union_map_free(ps->plain_must_writes);
+		ps->plain_may_writes =
+				isl_union_map_copy(ps->may_writes);
+		ps->plain_must_writes =
+				isl_union_map_copy(ps->must_writes);
+	}
 	ps->tagged_must_kills = pet_scop_get_tagged_must_kills(scop);
 	ps->must_kills = pet_scop_get_must_kills(scop);
 	ps->schedule = isl_schedule_copy(scop->schedule);
@@ -1292,7 +1325,8 @@ static struct ppcg_scop *ppcg_scop_from_pet_scop(struct pet_scop *scop,
 		return ppcg_scop_free(ps);
 
 	if (!ps->context || !ps->domain || !ps->call || !ps->ret || !ps->reads ||
-	    !ps->may_writes || !ps->must_writes || !ps->tagged_must_kills ||
+	    !ps->may_writes || !ps->must_writes || !ps->plain_may_writes ||
+	    !ps->plain_must_writes || !ps->tagged_must_kills ||
 	    !ps->must_kills || !ps->schedule || !ps->independence || !ps->names)
 		return ppcg_scop_free(ps);
 
