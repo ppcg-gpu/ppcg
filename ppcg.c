@@ -874,6 +874,174 @@ static int report_dead_code(struct ppcg_scop *ps,
 	return ps->options->stop_on_dead_code ? -1 : 0;
 }
 
+/* The statements a scop is made of, and which of them reach a root.
+ *
+ * "id" holds one isl_id per statement, and isl hands out one id per
+ * name per context, so two ids are the same statement exactly when
+ * they are the same pointer.  "reached" says whether the statement has
+ * been found to feed something live, and "queue" is the breadth first
+ * frontier as indices into "id".
+ *
+ * "edge_from" and "edge_to" are the dependence graph with one vertex
+ * per statement rather than one per statement instance.
+ */
+struct ppcg_stmt_graph {
+	isl_ctx *ctx;
+	int n;
+	int n_alloc;
+	isl_id **id;
+	int *reached;
+	int *queue;
+	int n_queue;
+
+	int n_edge;
+	int n_edge_alloc;
+	int *edge_from;
+	int *edge_to;
+};
+
+/* Return the index of "id" in "g", adding it if it is not there yet,
+ * or -1 on error.  "id" is consumed.
+ */
+static int stmt_index(struct ppcg_stmt_graph *g, __isl_take isl_id *id)
+{
+	int i;
+
+	if (!id)
+		return -1;
+	for (i = 0; i < g->n; ++i)
+		if (g->id[i] == id) {
+			isl_id_free(id);
+			return i;
+		}
+	if (g->n == g->n_alloc) {
+		int n_alloc = g->n_alloc ? 2 * g->n_alloc : 64;
+		isl_id **id_new = realloc(g->id, n_alloc * sizeof(*id_new));
+		int *reached = realloc(g->reached, n_alloc * sizeof(*reached));
+		int *queue = realloc(g->queue, n_alloc * sizeof(*queue));
+
+		if (id_new)
+			g->id = id_new;
+		if (reached)
+			g->reached = reached;
+		if (queue)
+			g->queue = queue;
+		if (!id_new || !reached || !queue) {
+			isl_id_free(id);
+			return -1;
+		}
+		g->n_alloc = n_alloc;
+	}
+	g->id[g->n] = id;
+	g->reached[g->n] = 0;
+	return g->n++;
+}
+
+/* Record that "from" feeds "to", both statement indices.
+ */
+static isl_stat add_edge(struct ppcg_stmt_graph *g, int from, int to)
+{
+	if (from < 0 || to < 0)
+		return isl_stat_error;
+	if (g->n_edge == g->n_edge_alloc) {
+		int n_alloc = g->n_edge_alloc ? 2 * g->n_edge_alloc : 256;
+		int *f = realloc(g->edge_from, n_alloc * sizeof(*f));
+		int *t = realloc(g->edge_to, n_alloc * sizeof(*t));
+
+		if (f)
+			g->edge_from = f;
+		if (t)
+			g->edge_to = t;
+		if (!f || !t)
+			return isl_stat_error;
+		g->n_edge_alloc = n_alloc;
+	}
+	g->edge_from[g->n_edge] = from;
+	g->edge_to[g->n_edge] = to;
+	g->n_edge++;
+
+	return isl_stat_ok;
+}
+
+/* Add the statement level edge described by one map of dep_flow,
+ * which runs from the instance that writes to the instance that reads.
+ */
+static isl_stat collect_edge(__isl_take isl_map *map, void *user)
+{
+	struct ppcg_stmt_graph *g = user;
+	int from, to;
+
+	from = stmt_index(g, isl_map_get_tuple_id(map, isl_dim_in));
+	to = stmt_index(g, isl_map_get_tuple_id(map, isl_dim_out));
+	isl_map_free(map);
+
+	return add_edge(g, from, to);
+}
+
+/* Mark the statement of "set" as a root and put it on the frontier.
+ */
+static isl_stat mark_root(__isl_take isl_set *set, void *user)
+{
+	struct ppcg_stmt_graph *g = user;
+	int i;
+
+	i = stmt_index(g, isl_set_get_tuple_id(set));
+	isl_set_free(set);
+	if (i < 0)
+		return isl_stat_error;
+	if (!g->reached[i]) {
+		g->reached[i] = 1;
+		g->queue[g->n_queue++] = i;
+	}
+
+	return isl_stat_ok;
+}
+
+/* The graph, and the live instances collected out of a domain.
+ */
+struct ppcg_keep_data {
+	struct ppcg_stmt_graph *g;
+	isl_union_set *live;
+};
+
+/* Keep "set" if its statement was reached, drop it otherwise.
+ *
+ * A statement of the domain that never appears in dep_flow and is no
+ * root is added here for the first time, unreached, and dropped --
+ * which is right: nothing it computes is read and it is not itself an
+ * output.
+ */
+static isl_stat keep_reached(__isl_take isl_set *set, void *user)
+{
+	struct ppcg_keep_data *d = user;
+	int i;
+
+	i = stmt_index(d->g, isl_set_get_tuple_id(set));
+	if (i < 0) {
+		isl_set_free(set);
+		return isl_stat_error;
+	}
+	if (d->g->reached[i])
+		d->live = isl_union_set_add_set(d->live, set);
+	else
+		isl_set_free(set);
+
+	return isl_stat_ok;
+}
+
+static void stmt_graph_clear(struct ppcg_stmt_graph *g)
+{
+	int i;
+
+	for (i = 0; i < g->n; ++i)
+		isl_id_free(g->id[i]);
+	free(g->id);
+	free(g->reached);
+	free(g->queue);
+	free(g->edge_from);
+	free(g->edge_to);
+}
+
 /* Eliminate dead code from ps->domain.
  *
  * In particular, intersect both ps->domain and the domain of
@@ -889,39 +1057,44 @@ static int report_dead_code(struct ppcg_scop *ps,
  * an array (except those that are later killed).  These are the roots:
  * what the scop computes for whoever comes after it.
  *
- * Then we add the statement instances that produce something needed by
- * a live instance, and the instances that produce something needed by
- * those, and so on.  That is the backward image of the roots under the
- * transitive closure of dep_flow, which reaches the whole of every
- * dependence chain ending in a root in a single step, rather than one
- * hop per iteration.
+ * Then we keep every statement that can reach a root by walking
+ * dep_flow backwards.  The walk is over statements and not over
+ * statement instances: one vertex per tuple name, one edge per map of
+ * dep_flow, and a breadth first search from the statements the roots
+ * belong to.  A statement that is reached keeps all of its instances.
  *
- * The closure is asked for without an exactness flag on purpose.  isl
- * documents its result as possibly being an overapproximation, never an
- * underapproximation, and an overapproximated closure keeps instances
- * that nothing needs, which costs a missed elimination and nothing else.
- * An underapproximation is what would be unsound here, and that is the
- * one thing isl does not return.
+ * That is an overapproximation, and it is the right one.  A statement
+ * some of whose instances feed a root keeps the instances that do not,
+ * which costs a missed elimination and nothing else; nothing needed is
+ * ever dropped, which is the only thing that would be unsound.  What
+ * dead code elimination is for here is whole statements that compute
+ * what nobody reads, and that is a property of the statement.
  *
- * The roots are added back after applying the closure: a root need not
- * lie in its own backward image.  The last write to a live-out array
- * has no consumer inside the scop, which is exactly what makes it a
- * root, so nothing maps to it under dep_flow.
+ * The precise answer -- the backward image of the roots under the
+ * transitive closure of dep_flow -- is what this used to compute, and
+ * it does not survive a whole program.  On one engine of 668 nodes the
+ * closure took a union map of 2765 relations to 1184629 and was still
+ * growing, at forty gigabytes, having spent its time in the cubic
+ * Floyd-Warshall that isl runs over the components of a union map.
+ * The walk below touches each edge once.
  *
- * No affine hull is taken anywhere, which is what the previous
- * formulation of this procedure used to bound the number of iterations.
- * Widening "live" to its affine hull and then cutting the result back
- * with the constraints that survive is not a monotone step: the hull
- * adds instances the intersections then remove, so "live" could reach a
- * state that reproduces itself exactly while the set of instances it
- * demands stayed strictly larger, and the subset test that ended the
- * loop could never become true.
+ * The roots are marked reached at the start rather than added at the
+ * end: a root need not lie in its own backward image, since the last
+ * write to a live-out array has no consumer inside the scop, which is
+ * exactly what makes it a root.
+ *
+ * No affine hull is taken anywhere, which is what an older formulation
+ * of this procedure used to bound the number of iterations.  Widening
+ * "live" to its affine hull and then cutting the result back with the
+ * constraints that survive is not a monotone step, and it could fail
+ * to terminate.
  */
 static int eliminate_dead_code(struct ppcg_scop *ps)
 {
-	isl_union_set *live, *roots;
-	isl_union_map *dep;
+	isl_union_set *live;
 	isl_union_pw_multi_aff *tagger;
+	struct ppcg_stmt_graph g = { 0 };
+	struct ppcg_keep_data keep;
 
 	live = isl_union_map_domain(isl_union_map_copy(ps->live_out));
 	if (!isl_union_set_is_empty(ps->call)) {
@@ -941,15 +1114,45 @@ static int eliminate_dead_code(struct ppcg_scop *ps)
 		live = isl_union_set_coalesce(live);
 	}
 
-	dep = isl_union_map_copy(ps->dep_flow);
-	dep = isl_union_map_reverse(dep);
-	dep = isl_union_map_transitive_closure(dep, NULL);
+	g.ctx = isl_union_set_get_ctx(live);
+	if (isl_union_map_foreach_map(ps->dep_flow, &collect_edge, &g) < 0)
+		goto error;
+	if (isl_union_set_foreach_set(live, &mark_root, &g) < 0)
+		goto error;
 
-	roots = live;
-	live = isl_union_set_apply(isl_union_set_copy(roots), dep);
-	live = isl_union_set_union(live, roots);
-	live = isl_union_set_intersect(live, isl_union_set_copy(ps->domain));
-	live = isl_union_set_coalesce(live);
+	/* Walk the edges backwards: an edge runs from what writes to what
+	 * reads, so a statement is live when something it feeds is live.
+	 * Each round takes one statement off the frontier and looks at
+	 * every edge, which is enough here -- the frontier holds each
+	 * statement at most once, so the whole walk is one pass over the
+	 * edges per statement rather than the cube of them.
+	 */
+	while (g.n_queue > 0) {
+		int to = g.queue[--g.n_queue];
+		int e;
+
+		for (e = 0; e < g.n_edge; ++e) {
+			int from;
+
+			if (g.edge_to[e] != to)
+				continue;
+			from = g.edge_from[e];
+			if (g.reached[from])
+				continue;
+			g.reached[from] = 1;
+			g.queue[g.n_queue++] = from;
+		}
+	}
+
+	isl_union_set_free(live);
+	keep.g = &g;
+	keep.live = isl_union_set_empty(isl_union_set_get_space(ps->domain));
+	if (isl_union_set_foreach_set(ps->domain, &keep_reached, &keep) < 0) {
+		isl_union_set_free(keep.live);
+		goto error;
+	}
+	live = isl_union_set_coalesce(keep.live);
+	stmt_graph_clear(&g);
 
 	if (report_dead_code(ps, live) < 0) {
 		isl_union_set_free(live);
@@ -968,6 +1171,10 @@ static int eliminate_dead_code(struct ppcg_scop *ps)
 						live);
 
 	return 0;
+error:
+	stmt_graph_clear(&g);
+	isl_union_set_free(live);
+	return -1;
 }
 
 /* Intersect "set" with the set described by "str", taking the NULL
