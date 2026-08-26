@@ -31,6 +31,27 @@
  * for a reduction, and because refusing them would leave the case this
  * is meant to address, a sum over an array of floats, unhandled.
  */
+/* The compound assignment that means the same as the binary operator
+ * "op", or pet_op_last when "op" is not one this recognises.
+ *
+ * "X = X + e" and "X += e" are one statement written two ways, and a
+ * reduction is a property of what a statement computes rather than of
+ * how it is spelled.  Recognising only the compound form left an
+ * expanded accumulation carrying a dependence it does not have, which
+ * costs the parallelism of the loop that holds it and says nothing.
+ */
+static enum pet_op_type assign_form_of(enum pet_op_type op)
+{
+	switch (op) {
+	case pet_op_add:	return pet_op_add_assign;
+	case pet_op_mul:	return pet_op_mul_assign;
+	case pet_op_and:	return pet_op_and_assign;
+	case pet_op_or:		return pet_op_or_assign;
+	case pet_op_xor:	return pet_op_xor_assign;
+	default:		return pet_op_last;
+	}
+}
+
 static int op_is_associative(enum pet_op_type op)
 {
 	switch (op) {
@@ -363,6 +384,63 @@ static int accumulate_is_associative(struct ppcg_scop *scop,
 	return expr_is_integer(scop, expr);
 }
 
+/* Is "expr" an expanded accumulation, "X = X op e", and if so what does
+ * it accumulate with?  Returns the compound assignment that names the
+ * operator, or pet_op_last.
+ *
+ * The accumulator is the assignment's target, and it has to appear
+ * again as an operand of the associative operator on the right, at the
+ * same location.  Which operand does not matter: the operators taken
+ * here are commutative as well, so "X = e + X" is the same statement.
+ *
+ * The location is compared and not the reference: the write and the
+ * read are two accesses and never share a ref id, while what makes this
+ * an accumulation is that they reach the same element.
+ */
+static enum pet_op_type expanded_accumulation(__isl_keep pet_expr *expr,
+	__isl_keep pet_expr *lhs)
+{
+	enum pet_op_type inner, op = pet_op_last;
+	pet_expr *rhs;
+	isl_multi_pw_aff *target, *other;
+	int i;
+
+	if (pet_expr_get_n_arg(expr) != 2)
+		return pet_op_last;
+	rhs = pet_expr_get_arg(expr, 1);
+	if (!rhs)
+		return pet_op_last;
+	if (pet_expr_get_type(rhs) != pet_expr_op ||
+	    pet_expr_get_n_arg(rhs) != 2) {
+		pet_expr_free(rhs);
+		return pet_op_last;
+	}
+	inner = pet_expr_op_get_type(rhs);
+	if (assign_form_of(inner) == pet_op_last) {
+		pet_expr_free(rhs);
+		return pet_op_last;
+	}
+
+	target = pet_expr_access_get_index(lhs);
+	for (i = 0; i < 2; ++i) {
+		pet_expr *arg = pet_expr_get_arg(rhs, i);
+
+		if (arg && pet_expr_get_type(arg) == pet_expr_access) {
+			other = pet_expr_access_get_index(arg);
+			if (same_location(target, other))
+				op = assign_form_of(inner);
+			isl_multi_pw_aff_free(other);
+		}
+		pet_expr_free(arg);
+		if (op != pet_op_last)
+			break;
+	}
+	isl_multi_pw_aff_free(target);
+	pet_expr_free(rhs);
+
+	return op;
+}
+
 static int extract_reduction(struct ppcg_scop *scop,
 	__isl_keep pet_expr *expr, int stmt, struct ppcg_reduction *red)
 {
@@ -370,12 +448,13 @@ static int extract_reduction(struct ppcg_scop *scop,
 	pet_expr *arg;
 	isl_bool is_read, is_write;
 	isl_space *space;
+	int n_acc = 1;
 	int ok = 0;
 
 	if (pet_expr_get_type(expr) != pet_expr_op)
 		return 0;
 	op = pet_expr_op_get_type(expr);
-	if (!op_is_associative(op))
+	if (!op_is_associative(op) && op != pet_op_assign)
 		return 0;
 	if (pet_expr_get_n_arg(expr) < 1)
 		return 0;
@@ -389,11 +468,32 @@ static int extract_reduction(struct ppcg_scop *scop,
 	}
 	is_read = pet_expr_access_is_read(arg);
 	is_write = pet_expr_access_is_write(arg);
+	/* THE TWO SPELLINGS DIFFER HERE AND NOWHERE ELSE.
+	 *
+	 * A compound assignment gives one access that both reads and
+	 * writes.  An expanded one gives a write here and a read on the
+	 * right, so the operator is found by looking at what is assigned,
+	 * and the statement is allowed one access to the accumulator more.
+	 */
+	if (op == pet_op_assign) {
+		if (is_write == isl_bool_true && is_read != isl_bool_true) {
+			op = expanded_accumulation(expr, arg);
+			n_acc = 2;
+		} else {
+			op = pet_op_last;
+		}
+		if (op == pet_op_last) {
+			pet_expr_free(arg);
+			return 0;
+		}
+		is_read = isl_bool_true;
+	}
 	if (is_read == isl_bool_true && is_write == isl_bool_true) {
 		red->stmt = stmt;
 		red->op = op;
 		red->ref = pet_expr_access_get_ref_id(arg);
 		red->index = pet_expr_access_get_index(arg);
+		red->n_acc = n_acc;
 		ok = red->ref != NULL && red->index != NULL;
 	}
 	if (ok) {
@@ -479,7 +579,7 @@ static int only_accumulates(__isl_keep pet_tree *tree,
 	ok = pet_tree_foreach_access_expr(tree, &count_access, &count) >= 0;
 	isl_space_free(count.array);
 
-	return ok && count.on_accumulator == 1 && count.writes == 1;
+	return ok && count.on_accumulator == red->n_acc && count.writes == 1;
 }
 
 /* Look for an accumulation in "tree".

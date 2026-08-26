@@ -19,23 +19,38 @@ extern "C" {
  *
  *	X[f(i)] = X[f(i)] op expr(i)
  *
- * written with a compound assignment, with "op" associative and
- * commutative, computes a value that does not depend on the order in
- * which the iterations are run.  The dependences it carries on X are
- * therefore not an obstacle to running them in parallel, provided the
- * generated code puts the partial results back together.
+ * with "op" associative and commutative, computes a value that does not
+ * depend on the order in which the iterations are run.  The dependences
+ * it carries on X are therefore not an obstacle to running them in
+ * parallel, provided the generated code puts the partial results back
+ * together.
+ *
+ * BOTH SPELLINGS ARE THE SAME STATEMENT.  C writes that two ways: as a
+ * compound assignment "X op= expr", where the accumulator is one access
+ * that both reads and writes, and expanded as "X = X op expr", where it
+ * is two accesses, a write and a read.  They compute the same value and
+ * a compiler emits the same instructions.  Only the compound form used
+ * to be recognised here, so a body that spelled its accumulation out
+ * kept a dependence it does not have and lost its parallelism, and
+ * nothing said so.
  *
  * "stmt" is the position of the statement in the scop.
- * "op" is the operator, one of the compound assignments.
- * "ref" identifies the access to the accumulator, so that the
- *	dependences it carries can be told apart from the others.
+ * "op" is the operator, named by its compound assignment whichever
+ *	spelling the source used.
+ * "ref" identifies the access to the accumulator that WRITES it, so
+ *	that the dependences it carries can be told apart from the others.
  * "index" is the location being accumulated into.
+ * "n_acc" is how many accesses to the accumulator the statement may
+ *	hold: one for the compound spelling, two for the expanded one.
+ *	More than that reads the accumulator a second time and is not an
+ *	accumulation, whichever way it is written.
  */
 struct ppcg_reduction {
 	int stmt;
 	enum pet_op_type op;
 	isl_id *ref;
 	isl_multi_pw_aff *index;
+	int n_acc;
 };
 
 /* The accumulations found in a scop.

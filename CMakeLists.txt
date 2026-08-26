@@ -328,6 +328,11 @@ add_reduction_run_test(iterator TRUE)
 add_reduction_run_test(collision FALSE)
 add_reduction_run_test(budget FALSE)
 add_reduction_run_test(aliased TRUE)
+# The same accumulation as sum, spelled out rather than compounded.  It
+# was not recognised at all until the detector learned to look past the
+# assignment at what is assigned, so the loop kept a dependence it does
+# not have and ran sequentially with nothing said about it.
+add_reduction_run_test(expanded TRUE)
 
 #--------------------------------------------------------------------
 # C target tests
