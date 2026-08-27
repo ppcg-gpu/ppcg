@@ -1294,20 +1294,6 @@ static struct ppcg_scop *ppcg_scop_from_pet_scop(struct pet_scop *scop,
 	ps->must_writes = pet_scop_get_must_writes(scop);
 	ps->plain_may_writes = pet_scop_get_plain_may_writes(scop);
 	ps->plain_must_writes = pet_scop_get_plain_must_writes(scop);
-	if (ps->plain_may_writes && ps->plain_must_writes &&
-	    isl_union_map_is_empty(ps->plain_may_writes)) {
-		/* No annotation composed anything: the plain view is the
-		 * composed view, and pet's scop-local temporaries -- which a
-		 * kill at the end of the scop would remove from the composed
-		 * one too -- are not in it.
-		 */
-		isl_union_map_free(ps->plain_may_writes);
-		isl_union_map_free(ps->plain_must_writes);
-		ps->plain_may_writes =
-				isl_union_map_copy(ps->may_writes);
-		ps->plain_must_writes =
-				isl_union_map_copy(ps->must_writes);
-	}
 	ps->tagged_must_kills = pet_scop_get_tagged_must_kills(scop);
 	ps->must_kills = pet_scop_get_must_kills(scop);
 	ps->schedule = isl_schedule_copy(scop->schedule);
