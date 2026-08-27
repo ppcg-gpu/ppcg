@@ -66,10 +66,18 @@ if(DEFINED EXPECT_FILE AND NOT "${EXPECT_FILE}" STREQUAL "")
     message(FATAL_ERROR "RunTranslate: no such EXPECT_FILE ${EXPECT_FILE}")
   endif()
   file(READ "${OUTPUT}" generated)
+  file(READ "${SOURCE}" original)
   file(STRINGS "${EXPECT_FILE}" expectations)
   foreach(expectation IN LISTS expectations)
     if("${expectation}" STREQUAL "" OR "${expectation}" MATCHES "^#")
       continue()
+    endif()
+    if(original MATCHES "${expectation}")
+      message(FATAL_ERROR
+        "'${expectation}' is already in ${SOURCE}, so it says nothing "
+        "about what ppcg did with it.  ppcg copies a source comment into "
+        "the file it writes, and an expectation the commentary can "
+        "satisfy passes whatever the translation turned out to be.")
     endif()
     if(NOT generated MATCHES "${expectation}")
       message(FATAL_ERROR

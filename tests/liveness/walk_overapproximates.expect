@@ -1,0 +1,9 @@
+# The walk keeps every instance of a statement it reaches.
+#
+# The bound is 15 and not 12: three of the sixteen values written are
+# never read, and the closure formulation dropped exactly those.  A
+# sharpening that put the bound back to 12 would be unsound in general,
+# so it is the bound that is pinned.
+for \(int c0 = 0; c0 <= 15; c0 \+= 1\)
+a\[c0\] = \(c0\);
+if \(c0 <= 12\)
