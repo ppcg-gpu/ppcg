@@ -664,6 +664,89 @@ static void remove_independences_from_tagged_flow(struct ppcg_scop *ps)
 	ps->tagged_dep_flow = isl_union_map_subtract(ps->tagged_dep_flow, tf);
 }
 
+/* The elements of the arrays this scop did not declare itself.
+ *
+ * An array declared inside the scop is storage the generated code owns:
+ * it may be given more of it, so two live ranges that would collide in
+ * one variable can be told apart by expanding that variable.  An array
+ * that came in from outside is the caller's, at the caller's address,
+ * and there is nothing to expand.  Anything the scheduler is allowed to
+ * do to it has to be legal in the storage it already has.
+ */
+static __isl_give isl_union_set *undeclared_elements(struct ppcg_scop *ps)
+{
+	isl_union_set *out;
+	int i;
+
+	out = isl_union_set_empty(isl_set_get_space(ps->context));
+	for (i = 0; i < ps->pet->n_array; ++i) {
+		struct pet_array *array = ps->pet->arrays[i];
+
+		if (array->declared)
+			continue;
+		out = isl_union_set_add_set(out, isl_set_copy(array->extent));
+	}
+
+	return out;
+}
+
+/* Add to ps->dep_forced those order dependences that live-range reordering
+ * must not be allowed to violate.
+ *
+ * LIVE-RANGE REORDERING PROMISES SOMETHING IT CANNOT KEEP FOR A PARAMETER.
+ *
+ * compute_order_dependences puts the read-before-write orderings into
+ * ps->dep_order, which the scheduler treats as conditional validity: it
+ * may violate them, on the understanding that the colliding live ranges
+ * will then be given separate storage.  For an array the scop declared,
+ * that is a promise the code generator can keep.  For an array that
+ * arrived as a parameter it cannot: the elements are the caller's memory
+ * at the caller's address, and the second live range has nowhere else to
+ * go.  The read then sees what the later write left.
+ *
+ * Measured on scop node 29 of the 402-node graph.  The buffer node_4_2 is
+ * read by every iteration of a MUL_MAT accumulation over its first 256
+ * elements and overwritten by the CONT copy that follows over its first
+ * 64.  The anti-dependence is built and correct --
+ *
+ *     dep_false:  S_1539[...] -> S_1543[...]
+ *
+ * -- and the schedule violates it anyway, fusing the copy into the
+ * accumulation's own nest.  Element 0 survives because its read happens
+ * before the first write; 250 of the other 448 copied values are read
+ * back already overwritten, the tokens change from the sixth on, and
+ * --no-live-range-reordering makes the same input give the engine's
+ * tokens exactly.
+ *
+ * Restricting the order dependences to elements of undeclared arrays and
+ * forcing those is the narrowest statement of that: reordering stays
+ * available everywhere the tool can pay for it.
+ */
+static void force_order_on_undeclared(struct ppcg_scop *ps)
+{
+	isl_union_map *order;
+	isl_union_set *elements;
+	isl_union_map *tagged;
+
+	elements = undeclared_elements(ps);
+	if (!elements)
+		return;
+
+	/* tagged_dep_order relates [R[..] -> ref[]] to [W[..] -> ref[]];
+	 * the accesses behind those references are what names the array,
+	 * so the read side is intersected through the tagged reads.
+	 */
+	tagged = isl_union_map_copy(ps->tagged_reads);
+	tagged = isl_union_map_intersect_range(tagged, elements);
+	order = isl_union_map_copy(ps->tagged_dep_order);
+	order = isl_union_map_intersect_domain(order,
+					isl_union_map_domain(tagged));
+	order = isl_union_map_factor_domain(order);
+
+	ps->dep_forced = isl_union_map_union(ps->dep_forced, order);
+	ps->dep_forced = isl_union_map_coalesce(ps->dep_forced);
+}
+
 /* Compute the dependences of the program represented by "scop"
  * in case live range reordering is allowed.
  *
@@ -681,6 +764,7 @@ static void compute_live_range_reordering_dependences(struct ppcg_scop *ps)
 	derive_flow_dep_from_tagged_flow_dep(ps);
 	compute_order_dependences(ps);
 	compute_forced_dependences(ps);
+	force_order_on_undeclared(ps);
 }
 
 /* Compute the potential flow dependences and the potential live in
@@ -784,6 +868,8 @@ static void compute_dependences(struct ppcg_scop *scop)
 		isl_union_map_dump(scop->tagged_reads);
 		fprintf(stderr, "tagged_mayw : ");
 		isl_union_map_dump(scop->tagged_may_writes);
+		fprintf(stderr, "dep_flow    : ");
+		isl_union_map_dump(scop->dep_flow);
 		fprintf(stderr, "dep_false   : ");
 		isl_union_map_dump(scop->dep_false);
 	}
