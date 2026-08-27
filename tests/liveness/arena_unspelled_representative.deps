@@ -1,0 +1,13 @@
+# What the dependences of this file have to come out as.
+#
+# The member's accesses survive under the representative's name, and the
+# flow between the loop that writes and the loop that reads survives with
+# them.  Without the array the annotation names, reads comes back empty,
+# may_writes keeps only the store to o, and dep_flow is empty.
+#
+# Brackets are balanced on purpose: file(STRINGS) keeps reading past the
+# newline when a line leaves one open, and three expectations then arrive
+# as one that matches nothing.
+reads *: \{ S_1\[[a-z_0-9]+\] -> rep\[o0\]
+may_writes *: \{ S_0\[[a-z_0-9]+\] -> rep\[o0\]
+dep_flow *: \{ S_0\[[a-z_0-9]+\] -> S_1\[[a-z_0-9]+\]

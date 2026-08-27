@@ -137,6 +137,14 @@ if(DEFINED EXPECT_DEPS_FILE AND NOT "${EXPECT_DEPS_FILE}" STREQUAL "")
     if("${expectation}" STREQUAL "" OR "${expectation}" MATCHES "^#")
       continue()
     endif()
+    if("${expectation}" MATCHES ";")
+      message(FATAL_ERROR
+        "an expectation in ${EXPECT_DEPS_FILE} arrived merged with the "
+        "next one:\n${expectation}\nfile(STRINGS) keeps reading past a "
+        "newline when a line leaves a bracket open, and the lines then "
+        "reach here as one element joined by a semicolon, matching "
+        "nothing.  Balance the brackets within each line.")
+    endif()
     if(original MATCHES "${expectation}")
       message(FATAL_ERROR
         "'${expectation}' is already in ${SOURCE}, so it says nothing "
