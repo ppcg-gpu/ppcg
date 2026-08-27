@@ -767,6 +767,26 @@ static void compute_dependences(struct ppcg_scop *scop)
 		scop->reduction_deps =
 			ppcg_reduction_dependences(scop, scop->reductions);
 	}
+
+	/* THE RELATIONS AN ORDER DEPENDENCE IS BUILT FROM, on request.
+	 *
+	 * dep_false takes may_writes as its sink and may_writes union reads
+	 * as its source, so a missing anti-dependence is a missing element
+	 * of one of exactly four relations.  Printing them beside the result
+	 * is the difference between naming the slot and guessing it.
+	 */
+	if (getenv("PPCG_DEBUG_DEPS")) {
+		fprintf(stderr, "reads       : ");
+		isl_union_map_dump(scop->reads);
+		fprintf(stderr, "may_writes  : ");
+		isl_union_map_dump(scop->may_writes);
+		fprintf(stderr, "tagged_reads: ");
+		isl_union_map_dump(scop->tagged_reads);
+		fprintf(stderr, "tagged_mayw : ");
+		isl_union_map_dump(scop->tagged_may_writes);
+		fprintf(stderr, "dep_false   : ");
+		isl_union_map_dump(scop->dep_false);
+	}
 }
 
 /* Report an empty context, meaning that the original code
