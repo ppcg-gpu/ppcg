@@ -69,29 +69,71 @@ if(size EQUAL 0)
   message(FATAL_ERROR "ppcg produced an empty ${OUTPUT}")
 endif()
 
+# Read a file of expectations, one per line.
+#
+# NOT file(STRINGS), which hands back a list: a semicolon inside a line
+# is then a separator, and "for \(int c0 = 0; c0 <= 15; c0 \+= 1\)"
+# arrives as three expectations that each match something harmless.  A
+# cell written that way passes on the fragments and holds nothing.  The
+# separator is escaped first and the split is on newlines only.
+macro(read_expectations file out)
+  file(READ "${file}" _content)
+  string(REPLACE ";" "\\;" _content "${_content}")
+  string(REPLACE "\n" ";" ${out} "${_content}")
+endmacro()
+
+# One expectation, against one body of text.
+#
+# A line beginning with "!" claims the OPPOSITE: that nothing matches.
+# Some of what a fix buys is silence -- a report that stops naming an
+# array the source subscribes in plain sight says nothing new, it stops
+# saying something false -- and a harness that can only assert presence
+# cannot hold that.
+#
+# The guards are the same either way.  An expectation the SOURCE already
+# satisfies claims nothing about what ppcg did, and one that arrived
+# merged with its neighbour matches nothing at all: file(STRINGS) keeps
+# reading past a newline while a bracket is open, and the lines then
+# reach here joined by the list separator.
+macro(check_expectation haystack what where)
+  set(_e "${expectation}")
+  string(REPLACE "\\;" ";" _e "${_e}")
+  set(_negated FALSE)
+  if("${_e}" MATCHES "^!")
+    set(_negated TRUE)
+    string(SUBSTRING "${_e}" 1 -1 _e)
+  endif()
+  if(NOT _negated AND original MATCHES "${_e}")
+    message(FATAL_ERROR
+      "'${_e}' is already in ${SOURCE}, so it says nothing about what "
+      "ppcg did with it.  ppcg copies a source comment into the file it "
+      "writes, and an expectation the commentary can satisfy passes "
+      "whatever the translation turned out to be.")
+  endif()
+  if(_negated AND "${haystack}" MATCHES "${_e}")
+    message(FATAL_ERROR
+      "${what} of ${SOURCE} still has something matching "
+      "'${_e}'\n${stdout}${stderr}")
+  endif()
+  if(NOT _negated AND NOT "${haystack}" MATCHES "${_e}")
+    message(FATAL_ERROR
+      "${what} of ${SOURCE} has nothing matching "
+      "'${_e}'\n${stdout}${stderr}")
+  endif()
+endmacro()
+
 if(DEFINED EXPECT_FILE AND NOT "${EXPECT_FILE}" STREQUAL "")
   if(NOT EXISTS "${EXPECT_FILE}")
     message(FATAL_ERROR "RunTranslate: no such EXPECT_FILE ${EXPECT_FILE}")
   endif()
   file(READ "${OUTPUT}" generated)
   file(READ "${SOURCE}" original)
-  file(STRINGS "${EXPECT_FILE}" expectations)
+  read_expectations("${EXPECT_FILE}" expectations)
   foreach(expectation IN LISTS expectations)
     if("${expectation}" STREQUAL "" OR "${expectation}" MATCHES "^#")
       continue()
     endif()
-    if(original MATCHES "${expectation}")
-      message(FATAL_ERROR
-        "'${expectation}' is already in ${SOURCE}, so it says nothing "
-        "about what ppcg did with it.  ppcg copies a source comment into "
-        "the file it writes, and an expectation the commentary can "
-        "satisfy passes whatever the translation turned out to be.")
-    endif()
-    if(NOT generated MATCHES "${expectation}")
-      message(FATAL_ERROR
-        "the translation of ${SOURCE} has nothing matching "
-        "'${expectation}'\n${stdout}${stderr}")
-    endif()
+    check_expectation("${generated}" "the translation" "${EXPECT_FILE}")
   endforeach()
 endif()
 
@@ -106,16 +148,13 @@ if(DEFINED EXPECT_SAYS_FILE AND NOT "${EXPECT_SAYS_FILE}" STREQUAL "")
     message(FATAL_ERROR
       "RunTranslate: no such EXPECT_SAYS_FILE ${EXPECT_SAYS_FILE}")
   endif()
-  file(STRINGS "${EXPECT_SAYS_FILE}" said)
+  file(READ "${SOURCE}" original)
+  read_expectations("${EXPECT_SAYS_FILE}" said)
   foreach(expectation IN LISTS said)
     if("${expectation}" STREQUAL "" OR "${expectation}" MATCHES "^#")
       continue()
     endif()
-    if(NOT "${stdout}${stderr}" MATCHES "${expectation}")
-      message(FATAL_ERROR
-        "translating ${SOURCE}, ppcg said nothing matching "
-        "'${expectation}'\n${stdout}${stderr}")
-    endif()
+    check_expectation("${stdout}${stderr}" "the report" "${EXPECT_SAYS_FILE}")
   endforeach()
 endif()
 
@@ -132,28 +171,12 @@ if(DEFINED EXPECT_DEPS_FILE AND NOT "${EXPECT_DEPS_FILE}" STREQUAL "")
       "RunTranslate: no such EXPECT_DEPS_FILE ${EXPECT_DEPS_FILE}")
   endif()
   file(READ "${SOURCE}" original)
-  file(STRINGS "${EXPECT_DEPS_FILE}" claimed)
+  read_expectations("${EXPECT_DEPS_FILE}" claimed)
   foreach(expectation IN LISTS claimed)
     if("${expectation}" STREQUAL "" OR "${expectation}" MATCHES "^#")
       continue()
     endif()
-    if("${expectation}" MATCHES ";")
-      message(FATAL_ERROR
-        "an expectation in ${EXPECT_DEPS_FILE} arrived merged with the "
-        "next one:\n${expectation}\nfile(STRINGS) keeps reading past a "
-        "newline when a line leaves a bracket open, and the lines then "
-        "reach here as one element joined by a semicolon, matching "
-        "nothing.  Balance the brackets within each line.")
-    endif()
-    if(original MATCHES "${expectation}")
-      message(FATAL_ERROR
-        "'${expectation}' is already in ${SOURCE}, so it says nothing "
-        "about the dependences ppcg built from it.")
-    endif()
-    if(NOT "${stdout}${stderr}" MATCHES "${expectation}")
-      message(FATAL_ERROR
-        "in the dependences of ${SOURCE}, nothing matches "
-        "'${expectation}'\n${stdout}${stderr}")
-    endif()
+    check_expectation("${stdout}${stderr}" "the dependences"
+                      "${EXPECT_DEPS_FILE}")
   endforeach()
 endif()

@@ -1,0 +1,7 @@
+# What ppcg has to report about this translation -- and what it must not.
+#
+# `rep` is written and read by name, so it is not a name the annotation
+# had to invent.  A leading "!" is a claim that nothing matches: read by
+# id object rather than by name, the line below is printed for every
+# representative whether or not the source spells it.
+!arena names never spelled in the source:.*rep
