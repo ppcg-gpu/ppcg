@@ -1,0 +1,6 @@
+# What the dependences of this file have to come out as.
+#
+# The anti-dependence between the read through the two-byte member and
+# the write through the four-byte one.  Taking the first member rather
+# than the smallest, pet refuses the scaled access and this is absent.
+dep_false *: \{ S_1\[\] -> S_2\[[a-z_0-9]+\] : [a-z_0-9]+ = 2048 \}

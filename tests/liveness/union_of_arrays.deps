@@ -1,0 +1,9 @@
+# What the dependences of this file have to come out as.
+#
+# The anti-dependence from the read through the int member to the write
+# through the float member that lands on the same bytes.  Without the
+# walk through subscripts in union_member_root, "g->f[i]" is an
+# ArraySubscriptExpr rather than a MemberExpr, the union machinery is
+# missed entirely, f and i are two independent arrays and this line comes
+# back empty.
+dep_false *: \{ S_1\[\] -> S_2\[[a-z_0-9]+\] : [a-z_0-9]+ = 1024 \}
