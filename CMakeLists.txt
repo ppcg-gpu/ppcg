@@ -714,21 +714,36 @@ if(OpenCL_FOUND)
         )
     endfunction()
 
-    # What the OpenCL target cannot translate yet.  Named here, where the
-    # corpus is defined, rather than kept out of tests/ -- a case moved
-    # somewhere quieter is a gap nobody reads.
+    # WHAT THE OPENCL TARGET DOES NOT DO WITH AN ARENA, named here, where
+    # the corpus is defined, rather than kept out of tests/ -- a case
+    # moved somewhere quieter is a gap nobody reads.
     #
-    #   arena_annotation  every access to a member of a `#pragma ppcg
-    #                     arena` is composed onto the array at offset 0,
-    #                     so the member is left with no accesses of its
-    #                     own, an empty extent and a void bound.
-    #                     build_array_bounds (gpu.c:2046) asks for its
-    #                     size regardless and isl_ast_build_expr.c:2211
-    #                     answers "cannot handle void expression".
-    #                     Measured both ways: the same file with the
-    #                     pragma removed translates to OpenCL and back.
-    #   arena_substitution  the same, reached through the map that
-    #                     travels with an inlined body's access.
+    # The first reading of this was too small.  It looked like one
+    # question asked of the wrong array: every access to a member of a
+    # `#pragma ppcg arena` is composed onto the representative, so the
+    # member is left with an empty extent, and build_array_bounds asks
+    # for its size regardless -- isl answers "cannot handle void
+    # expression".  Measured, the arrays of tests/arena_annotation.c
+    # arrive as
+    #
+    #     hi   bound={ hi[(0 : false)] }
+    #     idx  bound={ idx[(0 : false)] }
+    #     lo   bound={ lo[(8192)] }
+    #
+    # so refusing a device allocation to an array with no elements does
+    # let the file translate.  It also produces code that does not
+    # compile, because the KERNEL STILL NAMES THE MEMBERS:
+    #
+    #     __kernel void kernel0(__global float *hi, __global const float
+    #                           *idx, __global float *lo, ...)
+    #       hi[32 * b0 + t0] = private_hi[0];
+    #
+    # The composition never reaches the GPU path at all -- not the array
+    # references, not the allocation, not the copies -- so a member gets
+    # a buffer of its own and the aliasing the annotation declares is
+    # gone on the device.  Making these two cases translate is that
+    # work, not a guard in build_array_bounds, and until it is done they
+    # are C-target cases.
     set(OPENCL_UNSUPPORTED arena_annotation arena_substitution)
 
     foreach(test_file ${TEST_FILES})
