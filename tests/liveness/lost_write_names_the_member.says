@@ -1,0 +1,5 @@
+# What ppcg has to report about this translation.
+#
+# The member the source wrote, and not the representative it never
+# spelled.  Read from the composed relations the line reads "rep".
+ppcg: arrays losing a write: mem

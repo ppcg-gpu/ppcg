@@ -559,11 +559,22 @@ function(add_liveness_test source)
     set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/tests/liveness")
     set(expect
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/liveness/${base_name}.expect")
+    set(says
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/liveness/${base_name}.says")
+    set(claims)
 
-    if(NOT EXISTS ${expect})
+    if(EXISTS ${expect})
+        list(APPEND claims -DEXPECT_FILE=${expect})
+    endif()
+    if(EXISTS ${says})
+        list(APPEND claims -DEXPECT_SAYS_FILE=${says})
+    endif()
+    if(NOT claims)
         message(FATAL_ERROR
             "liveness cell ${base_name} claims nothing: a file in "
-            "tests/liveness needs a companion ${base_name}.expect")
+            "tests/liveness needs a companion ${base_name}.expect, for "
+            "what the translation has to contain, or ${base_name}.says, "
+            "for what ppcg has to report about it")
     endif()
 
     add_test(NAME Liveness_${base_name}
@@ -572,7 +583,7 @@ function(add_liveness_test source)
             -DSOURCE=${source}
             -DOUTPUT=${output_dir}/${base_name}.ppcg.c
             -DTIMEOUT_S=30
-            -DEXPECT_FILE=${expect}
+            ${claims}
             -P ${RUN_TRANSLATE}
     )
     set_tests_properties(Liveness_${base_name} PROPERTIES TIMEOUT 60)

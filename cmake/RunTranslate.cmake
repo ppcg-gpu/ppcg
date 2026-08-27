@@ -86,3 +86,27 @@ if(DEFINED EXPECT_FILE AND NOT "${EXPECT_FILE}" STREQUAL "")
     endif()
   endforeach()
 endif()
+
+# What ppcg SAID about the translation, rather than what it wrote.
+#
+# Some claims are not in the generated code at all: which array a lost
+# write is charged to is a name on stderr, and the whole point of
+# charging it correctly is that a reader can act on the name.  Those
+# expectations are read from ppcg's own output.
+if(DEFINED EXPECT_SAYS_FILE AND NOT "${EXPECT_SAYS_FILE}" STREQUAL "")
+  if(NOT EXISTS "${EXPECT_SAYS_FILE}")
+    message(FATAL_ERROR
+      "RunTranslate: no such EXPECT_SAYS_FILE ${EXPECT_SAYS_FILE}")
+  endif()
+  file(STRINGS "${EXPECT_SAYS_FILE}" said)
+  foreach(expectation IN LISTS said)
+    if("${expectation}" STREQUAL "" OR "${expectation}" MATCHES "^#")
+      continue()
+    endif()
+    if(NOT "${stdout}${stderr}" MATCHES "${expectation}")
+      message(FATAL_ERROR
+        "translating ${SOURCE}, ppcg said nothing matching "
+        "'${expectation}'\n${stdout}${stderr}")
+    endif()
+  endforeach()
+endif()
