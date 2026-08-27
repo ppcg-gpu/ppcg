@@ -721,7 +721,9 @@ if(OpenCL_FOUND)
     #                     answers "cannot handle void expression".
     #                     Measured both ways: the same file with the
     #                     pragma removed translates to OpenCL and back.
-    set(OPENCL_UNSUPPORTED arena_annotation)
+    #   arena_substitution  the same, reached through the map that
+    #                     travels with an inlined body's access.
+    set(OPENCL_UNSUPPORTED arena_annotation arena_substitution)
 
     foreach(test_file ${TEST_FILES})
         get_filename_component(opencl_case ${test_file} NAME_WE)
