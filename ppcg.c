@@ -886,9 +886,19 @@ static int report_dead_code(struct ppcg_scop *ps,
 	 * wants.  Those are different findings and only the second is a
 	 * defect, so the report names them rather than leaving the reader to
 	 * count statement numbers.
+	 *
+	 * OVER THE ARRAYS THE SOURCE NAMES, like the liveness this reports
+	 * on.  Read from the composed relations, a dead statement writing
+	 * through a member is charged to the storage's REPRESENTATIVE, which
+	 * the source never wrote and which loses nothing: the member is in
+	 * the report too, judged correctly, and the representative's entry is
+	 * the same write wearing another name.  At 402 nodes that phantom put
+	 * three representatives in the losses -- 90, 18 and 4 composed writes
+	 * against 2, 2 and 1 of their own -- and made the report unreadable
+	 * on exactly the question it was added to answer.
 	 */
 	lost = isl_union_map_intersect_domain(
-			isl_union_map_copy(ps->may_writes),
+			isl_union_map_copy(ps->plain_may_writes),
 			isl_union_set_copy(dead));
 	arrays = isl_union_map_range(lost);
 	p = isl_printer_print_str(p, "ppcg: arrays losing a write: ");
