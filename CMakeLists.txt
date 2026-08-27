@@ -538,6 +538,51 @@ foreach(test_file ${DEADCODE_FILES})
 endforeach()
 
 #--------------------------------------------------------------------
+# Liveness
+#
+# What ppcg decided to keep, read off the translation.
+#
+# tests/deadcode answers the same question by running two programs and
+# comparing what they print, which is the stronger assertion wherever it
+# can be made.  It cannot be made about arrays that share storage: an
+# eliminated write to one member leaves bytes another member wrote, so
+# reference and candidate agree while an output has been lost.  A cell
+# here is therefore a source and a companion .expect of regular
+# expressions, every one of which the generated code has to match.
+#--------------------------------------------------------------------
+
+file(GLOB LIVENESS_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/liveness/*.c")
+
+function(add_liveness_test source)
+    get_filename_component(base_name ${source} NAME_WE)
+    set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/tests/liveness")
+    set(expect
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/liveness/${base_name}.expect")
+
+    if(NOT EXISTS ${expect})
+        message(FATAL_ERROR
+            "liveness cell ${base_name} claims nothing: a file in "
+            "tests/liveness needs a companion ${base_name}.expect")
+    endif()
+
+    add_test(NAME Liveness_${base_name}
+        COMMAND ${CMAKE_COMMAND}
+            -DPPCG=$<TARGET_FILE:ppcg>
+            -DSOURCE=${source}
+            -DOUTPUT=${output_dir}/${base_name}.ppcg.c
+            -DTIMEOUT_S=30
+            -DEXPECT_FILE=${expect}
+            -P ${RUN_TRANSLATE}
+    )
+    set_tests_properties(Liveness_${base_name} PROPERTIES TIMEOUT 60)
+endfunction()
+
+foreach(test_file ${LIVENESS_FILES})
+    add_liveness_test(${test_file})
+endforeach()
+
+#--------------------------------------------------------------------
 # Whole program translation
 #
 # What ppcg_linked is for, checked by running what it generated: a call

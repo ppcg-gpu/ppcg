@@ -5,15 +5,24 @@
 # fire.  This driver runs ppcg as part of the test instead, so that
 # set_tests_properties(... TIMEOUT) bounds it.
 #
-#   PPCG       the ppcg executable
-#   SOURCE     the C file to translate
-#   OUTPUT     where to place the generated code
-#   TIMEOUT_S  seconds ppcg itself may run before it is killed
-#   OPTIONS    optional extra ppcg options, '|' separated
+#   PPCG         the ppcg executable
+#   SOURCE       the C file to translate
+#   OUTPUT       where to place the generated code
+#   TIMEOUT_S    seconds ppcg itself may run before it is killed
+#   OPTIONS      optional extra ppcg options, '|' separated
+#   EXPECT_FILE  optional file of regular expressions, one per line, each
+#                of which the generated code has to match
 #
 # The translation has to finish within the timeout and has to leave a
 # non-empty file behind.  What the generated code computes is checked by
 # the program that includes it, not here.
+#
+# EXPECT_FILE is for the claims a running program cannot make.  A write
+# that ppcg wrongly eliminates because two arrays share storage leaves
+# the same bytes behind either way -- the array it was dropped from is
+# covered by the other one, so a reference and a candidate agree while
+# the caller has lost an output.  What changed is the translation, so
+# that is what is read.
 
 foreach(required PPCG SOURCE OUTPUT TIMEOUT_S)
   if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
@@ -50,4 +59,22 @@ endif()
 file(SIZE "${OUTPUT}" size)
 if(size EQUAL 0)
   message(FATAL_ERROR "ppcg produced an empty ${OUTPUT}")
+endif()
+
+if(DEFINED EXPECT_FILE AND NOT "${EXPECT_FILE}" STREQUAL "")
+  if(NOT EXISTS "${EXPECT_FILE}")
+    message(FATAL_ERROR "RunTranslate: no such EXPECT_FILE ${EXPECT_FILE}")
+  endif()
+  file(READ "${OUTPUT}" generated)
+  file(STRINGS "${EXPECT_FILE}" expectations)
+  foreach(expectation IN LISTS expectations)
+    if("${expectation}" STREQUAL "" OR "${expectation}" MATCHES "^#")
+      continue()
+    endif()
+    if(NOT generated MATCHES "${expectation}")
+      message(FATAL_ERROR
+        "the translation of ${SOURCE} has nothing matching "
+        "'${expectation}'\n${stdout}${stderr}")
+    endif()
+  endforeach()
 endif()

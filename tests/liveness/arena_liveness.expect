@@ -1,0 +1,7 @@
+# What the translation of arena_liveness.c has to contain.
+#
+# One regular expression per line.  The write below is the one the
+# elimination dropped when liveness was judged over the composed
+# relations; a translation without it is the defect this file pins.
+a\[c0\] = \(1\.0f \+ \(\(float\) \(c0\)\)\);
+b\[c0\] = \(2\.0f \+ \(\(float\) \(c0\)\)\);
