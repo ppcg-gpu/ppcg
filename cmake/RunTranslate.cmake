@@ -40,8 +40,16 @@ if(DEFINED OPTIONS)
 endif()
 list(APPEND command "${SOURCE}" -o "${OUTPUT}")
 
+# A cell that claims something about the dependences has to ask for them.
+# PPCG_DEBUG_DEPS makes ppcg print reads, writes, dep_flow and dep_false
+# before it schedules; without it those lines are not there to match.
+set(environment)
+if(DEFINED EXPECT_DEPS_FILE AND NOT "${EXPECT_DEPS_FILE}" STREQUAL "")
+  set(environment ${CMAKE_COMMAND} -E env PPCG_DEBUG_DEPS=1)
+endif()
+
 execute_process(
-  COMMAND ${command}
+  COMMAND ${environment} ${command}
   RESULT_VARIABLE result
   TIMEOUT ${TIMEOUT_S}
   OUTPUT_VARIABLE stdout
@@ -106,6 +114,37 @@ if(DEFINED EXPECT_SAYS_FILE AND NOT "${EXPECT_SAYS_FILE}" STREQUAL "")
     if(NOT "${stdout}${stderr}" MATCHES "${expectation}")
       message(FATAL_ERROR
         "translating ${SOURCE}, ppcg said nothing matching "
+        "'${expectation}'\n${stdout}${stderr}")
+    endif()
+  endforeach()
+endif()
+
+# What the DEPENDENCES came out as.
+#
+# A relation is neither in the generated code nor in an ordinary report:
+# an anti-dependence that ppcg failed to build leaves no trace except an
+# empty dep_false and, later, a fusion nobody forbade.  The claims here
+# are matched against the dump PPCG_DEBUG_DEPS asks for, which the run
+# above turned on for exactly these cells.
+if(DEFINED EXPECT_DEPS_FILE AND NOT "${EXPECT_DEPS_FILE}" STREQUAL "")
+  if(NOT EXISTS "${EXPECT_DEPS_FILE}")
+    message(FATAL_ERROR
+      "RunTranslate: no such EXPECT_DEPS_FILE ${EXPECT_DEPS_FILE}")
+  endif()
+  file(READ "${SOURCE}" original)
+  file(STRINGS "${EXPECT_DEPS_FILE}" claimed)
+  foreach(expectation IN LISTS claimed)
+    if("${expectation}" STREQUAL "" OR "${expectation}" MATCHES "^#")
+      continue()
+    endif()
+    if(original MATCHES "${expectation}")
+      message(FATAL_ERROR
+        "'${expectation}' is already in ${SOURCE}, so it says nothing "
+        "about the dependences ppcg built from it.")
+    endif()
+    if(NOT "${stdout}${stderr}" MATCHES "${expectation}")
+      message(FATAL_ERROR
+        "in the dependences of ${SOURCE}, nothing matches "
         "'${expectation}'\n${stdout}${stderr}")
     endif()
   endforeach()

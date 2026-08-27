@@ -1,0 +1,7 @@
+# What the dependences of this file have to come out as.
+#
+# The anti-dependence from the read of idx[0] to the write of lo at the
+# element that shares its bytes.  Matched by shape rather than by index:
+# the index moves with the size of the form and the iterator's name with
+# the options ppcg was given, while the claim moves with neither.
+dep_false *: \{ S_1\[\] -> S_2\[[a-z_0-9]+\] : [a-z_0-9]+ = [0-9]+ \}

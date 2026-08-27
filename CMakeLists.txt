@@ -561,6 +561,8 @@ function(add_liveness_test source)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/liveness/${base_name}.expect")
     set(says
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/liveness/${base_name}.says")
+    set(deps
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/liveness/${base_name}.deps")
     set(claims)
 
     if(EXISTS ${expect})
@@ -569,12 +571,16 @@ function(add_liveness_test source)
     if(EXISTS ${says})
         list(APPEND claims -DEXPECT_SAYS_FILE=${says})
     endif()
+    if(EXISTS ${deps})
+        list(APPEND claims -DEXPECT_DEPS_FILE=${deps})
+    endif()
     if(NOT claims)
         message(FATAL_ERROR
             "liveness cell ${base_name} claims nothing: a file in "
             "tests/liveness needs a companion ${base_name}.expect, for "
-            "what the translation has to contain, or ${base_name}.says, "
-            "for what ppcg has to report about it")
+            "what the translation has to contain, ${base_name}.says, "
+            "for what ppcg has to report about it, or ${base_name}.deps, "
+            "for what the dependences have to come out as")
     endif()
 
     add_test(NAME Liveness_${base_name}
