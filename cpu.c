@@ -90,360 +90,14 @@ static FILE *get_output_file(const char *input, const char *output)
 	return file;
 }
 
-/* Data used to annotate for nodes in the ast.
- */
-struct ast_node_userinfo {
-	/* The for node is an openmp parallel for node. */
-	int is_openmp;
-	/* The clause naming the accumulators whose dependences were
-	 * removed to make this node parallel, or NULL when there are
-	 * none.  Without it the parallel loop would race on them.
-	 */
-	char *reduction_clause;
-};
 
-/* Information used while building the ast.
- */
-struct ast_build_userinfo {
-	/* The current ppcg scop. */
-	struct ppcg_scop *scop;
 
-	/* Are we currently in a parallel for loop? */
-	int in_parallel_for;
 
-	/* The contraction of the entire schedule tree. */
-	isl_union_pw_multi_aff *contraction;
-};
 
-/* Check if the current scheduling dimension is parallel.
- *
- * We check for parallelism by verifying that the loop does not carry any
- * dependences.
- *
- * If any expansion nodes are present in the schedule tree,
- * then they are assumed to be situated near the leaves of the schedule tree,
- * underneath any node that may result in a for loop.
- * In particular, these expansions may have been introduced
- * by the call to isl_schedule_expand inside ppcg_compute_grouping_schedule.
- * The dependence relations are formulated in terms of the expanded
- * domains, while, by assumption, the partial schedule returned
- * by isl_ast_build_get_schedule refers to the contracted domains.
- * Plug in the contraction such that the schedule would also
- * refer to the expanded domains.
- * Note that if the schedule tree does not contain any expansions,
- * then the contraction is an identity function.
- *
- * If the live_range_reordering option is set, then this currently
- * includes the order dependences.  In principle, non-zero order dependences
- * could be allowed, but this would require privatization and/or expansion.
- *
- * Parallelism test: if the distance is zero in all outer dimensions, then it
- * has to be zero in the current dimension as well.
- * Implementation: first, translate dependences into time space, then force
- * outer dimensions to be equal.  If the distance is zero in the current
- * dimension, then the loop is parallel.
- * The distance is zero in the current dimension if it is a subset of a map
- * with equal values for the current dimension.
- */
-/* Do all the pairs of iterations in "relation" end up at the same value of
- * the schedule dimension the loop at "build" runs over, once the outer
- * dimensions are forced to be equal?
- *
- * This answers two questions with the same computation.  When "relation"
- * holds the dependences, it says whether the loop can be run in parallel.
- * When it holds the pairs of iterations that accumulate into the same
- * location, it says whether the threads share that accumulator: if every
- * such pair stays within one iteration of the loop, they do not, and the
- * accumulator does not have to be named in a clause.
- *
- * The schedule returned by isl_ast_build_get_schedule refers to the
- * contracted domains.  Plug in the contraction such that it would also
- * refer to the expanded domains.  Note that if the schedule tree does not
- * contain any expansions, then the contraction is an identity function.
- */
-static int dim_is_coincident(__isl_keep isl_ast_build *build,
-	struct ast_build_userinfo *build_info,
-	__isl_take isl_union_map *relation)
-{
-	isl_union_map *schedule;
-	isl_map *pairs, *test;
-	isl_space *schedule_space;
-	unsigned i, dimension, coincident;
 
-	schedule = isl_ast_build_get_schedule(build);
-	schedule = isl_union_map_preimage_domain_union_pw_multi_aff(schedule,
-		isl_union_pw_multi_aff_copy(build_info->contraction));
-	schedule_space = isl_ast_build_get_schedule_space(build);
 
-	dimension = isl_space_dim(schedule_space, isl_dim_out) - 1;
 
-	relation = isl_union_map_apply_range(relation,
-					isl_union_map_copy(schedule));
-	relation = isl_union_map_apply_domain(relation, schedule);
 
-	if (isl_union_map_is_empty(relation)) {
-		isl_union_map_free(relation);
-		isl_space_free(schedule_space);
-		return 1;
-	}
-
-	pairs = isl_map_from_union_map(relation);
-
-	for (i = 0; i < dimension; i++)
-		pairs = isl_map_equate(pairs, isl_dim_out, i, isl_dim_in, i);
-
-	test = isl_map_universe(isl_map_get_space(pairs));
-	test = isl_map_equate(test, isl_dim_out, dimension, isl_dim_in,
-			      dimension);
-	coincident = isl_map_is_subset(pairs, test);
-
-	isl_space_free(schedule_space);
-	isl_map_free(test);
-	isl_map_free(pairs);
-
-	return coincident;
-}
-
-/* Check if the current scheduling dimension is parallel.
- *
- * We check if the loop dimension is parallel by checking if the dependence
- * distances are zero in the current dimension.
- *
- * If the live_range_reordering option is set, then this currently
- * includes the order dependences.  In principle, non-zero order dependences
- * could be allowed, but this would require privatization and/or expansion.
- */
-static int ast_schedule_dim_is_parallel(__isl_keep isl_ast_build *build,
-	struct ast_build_userinfo *build_info)
-{
-	struct ppcg_scop *scop = build_info->scop;
-	isl_union_map *deps;
-
-	deps = isl_union_map_copy(scop->dep_flow);
-	deps = isl_union_map_union(deps, isl_union_map_copy(scop->dep_false));
-	if (scop->options->live_range_reordering) {
-		isl_union_map *order = isl_union_map_copy(scop->dep_order);
-		deps = isl_union_map_union(deps, order);
-	}
-	/* The iterations of an accumulation may be run in any order, so
-	 * the dependences that only order them do not stand in the way of
-	 * running the loop in parallel.  What does stand in the way is
-	 * leaving the accumulator shared, which is why a loop marked
-	 * parallel here carries a clause naming it.
-	 */
-	if (scop->reduction_deps)
-		deps = isl_union_map_subtract(deps,
-			isl_union_map_copy(scop->reduction_deps));
-
-	return dim_is_coincident(build, build_info, deps);
-}
-
-/* The iterations of the scop that the loop at "build" runs.
- */
-static __isl_give isl_union_set *ast_build_domain(
-	__isl_keep isl_ast_build *build,
-	struct ast_build_userinfo *build_info)
-{
-	isl_union_map *schedule;
-
-	schedule = isl_ast_build_get_schedule(build);
-	schedule = isl_union_map_preimage_domain_union_pw_multi_aff(schedule,
-		isl_union_pw_multi_aff_copy(build_info->contraction));
-
-	return isl_union_map_domain(schedule);
-}
-
-/* The OpenMP clause naming the accumulators the loop at "build" shares
- * between its threads, or NULL when there are none.
- *
- * The dependences that ordered the iterations of these accumulations
- * were removed so that the loop could be run in parallel, so the loop
- * has to be told to give each thread its own copy and to put the copies
- * back together afterwards.  Without this the loop would race.
- *
- * Only the accumulators the threads really share are named.  One that
- * the loop merely reads must not be, because a thread would then read
- * its own copy, which starts out at the identity of the operator rather
- * than at the value the variable holds.  Neither must one that every
- * thread has to itself already, as y[i] has in y[i] += A[i][j] * x[j]:
- * naming it would make each thread privatise the whole of y for nothing.
- *
- * When an accumulator the threads do share cannot be named at all,
- * "*ok" is set to 0.  The loop then may not be run in parallel, since
- * what made it look parallel was leaving out the dependences that order
- * the accumulation, and only the clause makes up for that.
- *
- * The same happens when the loop would name more than a thread's stack
- * holds.  Every thread is given a copy of everything named, all of it
- * at once, so what has to stay within the budget is the whole of the
- * clause rather than each accumulator of it.
- */
-static char *reduction_clause(__isl_keep isl_ast_build *build,
-	struct ast_build_userinfo *build_info, int *ok)
-{
-	struct ppcg_scop *scop = build_info->scop;
-	isl_union_set *domain = NULL;
-	char *clause = NULL;
-	size_t len = 0;
-	long total = 0;
-	int i;
-
-	*ok = 1;
-	if (!scop || !scop->reductions)
-		return NULL;
-
-	for (i = 0; i < scop->reductions->n; ++i) {
-		struct ppcg_reduction *red = &scop->reductions->red[i];
-		const char *op;
-		char *name;
-		size_t need;
-		long bytes;
-		char *grown;
-
-		if (dim_is_coincident(build, build_info,
-					ppcg_reduction_same_location(red)))
-			continue;
-
-		if (!domain)
-			domain = ast_build_domain(build, build_info);
-		name = ppcg_reduction_clause_name(scop, red, domain, &bytes);
-		if (!name) {
-			*ok = 0;
-			break;
-		}
-
-		total += bytes;
-		if (total > PPCG_REDUCTION_MAX_BYTES) {
-			free(name);
-			*ok = 0;
-			break;
-		}
-
-		op = ppcg_reduction_op_str(red);
-		need = len + strlen(" reduction(:)") + strlen(op) +
-			strlen(name) + 1;
-		grown = realloc(clause, need);
-		if (grown) {
-			len += sprintf(grown + len, " reduction(%s:%s)", op,
-					name);
-			clause = grown;
-		} else {
-			free(clause);
-			clause = NULL;
-			*ok = 0;
-		}
-		free(name);
-		if (!*ok)
-			break;
-	}
-
-	isl_union_set_free(domain);
-	if (!*ok) {
-		free(clause);
-		return NULL;
-	}
-
-	return clause;
-}
-
-/* Mark a for node openmp parallel, if it is the outermost parallel for node.
- */
-static void mark_openmp_parallel(__isl_keep isl_ast_build *build,
-	struct ast_build_userinfo *build_info,
-	struct ast_node_userinfo *node_info)
-{
-	char *clause;
-	int ok;
-
-	if (build_info->in_parallel_for)
-		return;
-
-	if (!ast_schedule_dim_is_parallel(build, build_info))
-		return;
-
-	clause = reduction_clause(build, build_info, &ok);
-	if (!ok)
-		return;
-
-	build_info->in_parallel_for = 1;
-	node_info->is_openmp = 1;
-	node_info->reduction_clause = clause;
-}
-
-/* Allocate an ast_node_info structure and initialize it with default values.
- */
-static struct ast_node_userinfo *allocate_ast_node_userinfo()
-{
-	struct ast_node_userinfo *node_info;
-	node_info = (struct ast_node_userinfo *)
-		malloc(sizeof(struct ast_node_userinfo));
-	node_info->is_openmp = 0;
-	node_info->reduction_clause = NULL;
-	return node_info;
-}
-
-/* Free an ast_node_info structure.
- */
-static void free_ast_node_userinfo(void *ptr)
-{
-	struct ast_node_userinfo *info;
-	info = (struct ast_node_userinfo *) ptr;
-	free(info->reduction_clause);
-	free(info);
-}
-
-/* This method is executed before the construction of a for node. It creates
- * an isl_id that is used to annotate the subsequently generated ast for nodes.
- *
- * In this function we also run the following analyses:
- *
- * 	- Detection of openmp parallel loops
- */
-static __isl_give isl_id *ast_build_before_for(
-	__isl_keep isl_ast_build *build, void *user)
-{
-	isl_id *id;
-	struct ast_build_userinfo *build_info;
-	struct ast_node_userinfo *node_info;
-
-	build_info = (struct ast_build_userinfo *) user;
-	node_info = allocate_ast_node_userinfo();
-	id = isl_id_alloc(isl_ast_build_get_ctx(build), "", node_info);
-	id = isl_id_set_free_user(id, free_ast_node_userinfo);
-
-	mark_openmp_parallel(build, build_info, node_info);
-
-	return id;
-}
-
-/* This method is executed after the construction of a for node.
- *
- * It performs the following actions:
- *
- * 	- Reset the 'in_parallel_for' flag, as soon as we leave a for node,
- * 	  that is marked as openmp parallel.
- *
- */
-static __isl_give isl_ast_node *ast_build_after_for(
-	__isl_take isl_ast_node *node, __isl_keep isl_ast_build *build,
-	void *user)
-{
-	isl_id *id;
-	struct ast_build_userinfo *build_info;
-	struct ast_node_userinfo *info;
-
-	id = isl_ast_node_get_annotation(node);
-	info = isl_id_get_user(id);
-
-	if (info && info->is_openmp) {
-		build_info = (struct ast_build_userinfo *) user;
-		build_info->in_parallel_for = 0;
-	}
-
-	isl_id_free(id);
-
-	return node;
-}
 
 /* Find the position in scop->stmts of the statement with the given "id",
  * or -1 when there is none.
@@ -489,69 +143,7 @@ static __isl_give isl_printer *print_user(__isl_take isl_printer *p,
 }
 
 
-/* Print a for loop node as an openmp parallel loop.
- *
- * To print an openmp parallel loop we print a normal for loop, but add
- * "#pragma openmp parallel for" in front.
- *
- * Variables that are declared within the body of this for loop are
- * automatically openmp 'private'. Iterators declared outside of the
- * for loop are automatically openmp 'shared'. As ppcg declares all iterators
- * at the position where they are assigned, there is no need to explicitly mark
- * variables. Their automatically assigned type is already correct.
- *
- * This function only generates valid OpenMP code, if the ast was generated
- * with the 'atomic-bounds' option enabled.
- *
- */
-static __isl_give isl_printer *print_for_with_openmp(
-	__isl_keep isl_ast_node *node, __isl_take isl_printer *p,
-	__isl_take isl_ast_print_options *print_options,
-	struct ast_node_userinfo *info)
-{
-	p = isl_printer_start_line(p);
-	p = isl_printer_print_str(p, "#pragma omp parallel for");
-	if (info && info->reduction_clause)
-		p = isl_printer_print_str(p, info->reduction_clause);
-	p = isl_printer_end_line(p);
 
-	p = isl_ast_node_for_print(node, p, print_options);
-
-	return p;
-}
-
-/* Print a for node.
- *
- * Depending on how the node is annotated, we either print a normal
- * for node or an openmp parallel for node.
- */
-static __isl_give isl_printer *print_for(__isl_take isl_printer *p,
-	__isl_take isl_ast_print_options *print_options,
-	__isl_keep isl_ast_node *node, void *user)
-{
-	isl_id *id;
-	int openmp;
-
-	openmp = 0;
-	id = isl_ast_node_get_annotation(node);
-
-	struct ast_node_userinfo *info = NULL;
-
-	if (id) {
-		info = (struct ast_node_userinfo *) isl_id_get_user(id);
-		if (info && info->is_openmp)
-			openmp = 1;
-	}
-
-	if (openmp)
-		p = print_for_with_openmp(node, p, print_options, info);
-	else
-		p = isl_ast_node_for_print(node, p, print_options);
-
-	isl_id_free(id);
-
-	return p;
-}
 
 /* Index transformation callback for pet_stmt_build_ast_exprs.
  *
@@ -680,35 +272,6 @@ static __isl_give isl_printer *cpu_print_macros(__isl_take isl_printer *p,
 	return p;
 }
 
-/* Initialize the fields of "build_info".
- *
- * Initially, the AST generation is not inside any parallel for loop.
- *
- * The contraction of the entire schedule tree is extracted
- * right underneath the root node.
- */
-static isl_stat init_build_info(struct ast_build_userinfo *build_info,
-	struct ppcg_scop *scop, __isl_keep isl_schedule *schedule)
-{
-	isl_schedule_node *node = isl_schedule_get_root(schedule);
-	node = isl_schedule_node_child(node, 0);
-
-	build_info->scop = scop;
-	build_info->in_parallel_for = 0;
-	build_info->contraction =
-		isl_schedule_node_get_subtree_contraction(node);
-
-	isl_schedule_node_free(node);
-
-	return isl_stat_non_null(build_info->contraction);
-}
-
-/* Clear all memory allocated by "build_info".
- */
-static void clear_build_info(struct ast_build_userinfo *build_info)
-{
-	isl_union_pw_multi_aff_free(build_info->contraction);
-}
 
 /* Code generate the scop 'scop' using "schedule"
  * and print the corresponding C code to 'p'.
@@ -722,7 +285,6 @@ static __isl_give isl_printer *print_scop(struct ppcg_scop *scop,
 	isl_ast_print_options *print_options;
 	isl_ast_node *tree;
 	isl_id_list *iterators;
-	struct ast_build_userinfo build_info;
 	int depth;
 
 	depth = 0;
@@ -735,30 +297,13 @@ static __isl_give isl_printer *print_scop(struct ppcg_scop *scop,
 	build = isl_ast_build_set_iterators(build, iterators);
 	build = isl_ast_build_set_at_each_domain(build, &at_each_domain, scop);
 
-	if (options->openmp) {
-		if (init_build_info(&build_info, scop, schedule) < 0)
-			build = isl_ast_build_free(build);
-
-		build = isl_ast_build_set_before_each_for(build,
-							&ast_build_before_for,
-							&build_info);
-		build = isl_ast_build_set_after_each_for(build,
-							&ast_build_after_for,
-							&build_info);
-	}
-
 	tree = isl_ast_build_node_from_schedule(build, schedule);
 	isl_ast_build_free(build);
-
-	if (options->openmp)
-		clear_build_info(&build_info);
 
 	print_options = isl_ast_print_options_alloc(ctx);
 	print_options = isl_ast_print_options_set_print_user(print_options,
 							&print_user, NULL);
 
-	print_options = isl_ast_print_options_set_print_for(print_options,
-							&print_for, NULL);
 
 	p = cpu_print_macros(p, tree);
 	p = isl_ast_node_print(tree, p, print_options);
@@ -827,17 +372,15 @@ static __isl_give isl_schedule_node *tile_band(
  * and the coincidence constraints are set to the union of the flow
  * dependences and the false dependences.
  *
- * Note that the coincidence constraints are only set when the "openmp"
- * options is set.  Even though the way openmp pragmas are introduced
- * does not rely on the coincident property of the schedule band members,
- * the coincidence constraints do affect the way the schedule is constructed,
- * such that more schedule dimensions should be detected as parallel
- * by ast_schedule_dim_is_parallel.
- * Since the order dependences are also taken into account by
- * ast_schedule_dim_is_parallel, they are also added to
- * the coincidence constraints.  If the openmp handling learns
- * how to privatize some memory, then the corresponding order
- * dependences can be removed from the coincidence constraints.
+ * THE COINCIDENCE CONSTRAINTS ARE ALWAYS SET.  They ask the scheduler to
+ * make schedule dimensions parallel, and that is what this tool is for.
+ * They used to be conditional on an --openmp option that also printed
+ * "#pragma omp parallel for" in front of every outermost parallel loop.
+ * The pragmas are gone: they are code generation decided one loop at a
+ * time, and one loop at a time is precisely the shape this is meant to
+ * leave behind.  The constraints stay, because wanting the dimensions
+ * parallel is not the same thing as wanting a fork and a join around
+ * each of them.
  */
 static __isl_give isl_schedule_constraints *construct_cpu_schedule_constraints(
 	struct ppcg_scop *ps)
@@ -855,20 +398,16 @@ static __isl_give isl_schedule_constraints *construct_cpu_schedule_constraints(
 		validity = isl_union_map_copy(ps->dep_flow);
 		validity = isl_union_map_union(validity,
 				isl_union_map_copy(ps->dep_forced));
-		if (ps->options->openmp) {
-			coincidence = isl_union_map_copy(validity);
-			coincidence = isl_union_map_union(coincidence,
-					isl_union_map_copy(ps->dep_order));
-		}
+		coincidence = isl_union_map_copy(validity);
+		coincidence = isl_union_map_union(coincidence,
+				isl_union_map_copy(ps->dep_order));
 	} else {
 		validity = isl_union_map_copy(ps->dep_flow);
 		validity = isl_union_map_union(validity,
 				isl_union_map_copy(ps->dep_false));
-		if (ps->options->openmp)
-			coincidence = isl_union_map_copy(validity);
+		coincidence = isl_union_map_copy(validity);
 	}
-	if (ps->options->openmp)
-		sc = isl_schedule_constraints_set_coincidence(sc, coincidence);
+	sc = isl_schedule_constraints_set_coincidence(sc, coincidence);
 	sc = isl_schedule_constraints_set_validity(sc, validity);
 	sc = isl_schedule_constraints_set_proximity(sc,
 					isl_union_map_copy(ps->dep_flow));

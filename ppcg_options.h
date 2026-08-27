@@ -52,7 +52,6 @@ struct ppcg_options {
 	int target;
 
 	/* Generate OpenMP macros (C target only). */
-	int openmp;
 
 	/* Linearize all device arrays. */
 	int linearize_device_arrays;

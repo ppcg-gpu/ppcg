@@ -1,2 +1,0 @@
-#pragma omp parallel for reduction(+:s0[0:1024]) reduction(+:s1[0:1024]) reduction(+:s2[0:1024]) reduction(+:s3[0:1024]) reduction(+:s4[0:1024]) reduction(+:s5[0:1024]) reduction(+:s6[0:1024]) reduction(+:s7[0:1024])
-!reduction(+:l0

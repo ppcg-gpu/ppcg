@@ -45,22 +45,6 @@ ISL_ARGS_END
 
 ISL_ARG_DEF(options, struct options, options_args)
 
-static int check_options(isl_ctx *ctx)
-{
-	struct options *options;
-
-	options = isl_ctx_peek_options(ctx, &options_args);
-	if (!options)
-		isl_die(ctx, isl_error_internal,
-			"unable to find options", return -1);
-
-	if (options->ppcg->openmp &&
-	    !isl_options_get_ast_build_atomic_upper_bound(ctx))
-		isl_die(ctx, isl_error_invalid,
-			"OpenMP requires atomic bounds", return -1);
-
-	return 0;
-}
 
 int main(int argc, char **argv)
 {
@@ -81,9 +65,7 @@ int main(int argc, char **argv)
 	pet_options_set_encapsulate_dynamic_control(ctx, 1);
 	argc = options_parse(options, argc, argv, ISL_ARG_ALL);
 
-	if (check_options(ctx) < 0)
-		r = EXIT_FAILURE;
-	else if (options->ppcg->target == PPCG_TARGET_CUDA)
+	if (options->ppcg->target == PPCG_TARGET_CUDA)
 		r = generate_cuda(ctx, options->ppcg, options->input);
 	else if (options->ppcg->target == PPCG_TARGET_OPENCL)
 		r = generate_opencl(ctx, options->ppcg, options->input,

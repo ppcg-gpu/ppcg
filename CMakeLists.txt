@@ -226,15 +226,6 @@ function(add_reduction_run_test base_name tolerant)
     set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/tests/reduction/run/${base_name}")
     file(MAKE_DIRECTORY ${output_dir})
 
-    add_test(NAME Reduction_codegen_${base_name}
-        COMMAND ${CMAKE_COMMAND}
-            -DPPCG=$<TARGET_FILE:ppcg>
-            -DSOURCE=${source}
-            -DBINDIR=${output_dir}/codegen
-            -DEXPECTED=${REDUCTION_RUN_DIR}/${base_name}.omp
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunReductionCodegenTest.cmake
-    )
-
     if(NOT OpenMP_C_FOUND)
         return()
     endif()
@@ -249,7 +240,7 @@ function(add_reduction_run_test base_name tolerant)
 
     set(candidate reduction_${base_name}_omp)
     add_ppcg_program(${candidate} ${source} ${output_dir}
-        "--target=c;--openmp" ${main})
+        "--target=c" ${main})
     target_link_libraries(${candidate} PRIVATE OpenMP::OpenMP_C)
 
     # Once with a thread count that divides the trip count evenly and
@@ -397,9 +388,7 @@ foreach(example_file ${EXAMPLE_FILES})
     add_c_example_test(tile ${example_file} "--target=c;--tile")
     add_c_example_test(live ${example_file}
         "--target=c;--no-live-range-reordering;--tile")
-    if(OpenMP_C_FOUND)
-        add_c_example_test(openmp ${example_file} "--target=c;--openmp")
-    endif()
+
 endforeach()
 
 if(NOT OpenMP_C_FOUND)
@@ -867,10 +856,9 @@ if(POLYBENCH_DIR AND EXISTS "${POLYBENCH_DIR}/utilities/benchmark_list")
     add_polybench_test(c "--target=c;--tile")
     add_polybench_test(live "--target=c;--no-live-range-reordering;--tile")
 
-    if(OpenMP_C_FOUND)
-        add_polybench_test(omp "--target=c;--openmp")
+    if(FALSE)
     else()
-        message(STATUS "OpenMP not found. Polybench OpenMP tests will be skipped.")
+        message(STATUS "Polybench OpenMP tests removed with the pragmas.")
     endif()
 
     if(OpenCL_FOUND)

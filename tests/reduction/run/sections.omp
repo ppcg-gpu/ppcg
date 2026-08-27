@@ -1,4 +1,0 @@
-#pragma omp parallel for reduction(+:o[16:16])
-#pragma omp parallel for reduction(+:t[0:8][0:8])
-#pragma omp parallel for reduction(+:s[0:4096])
-!reduction(+:b[
