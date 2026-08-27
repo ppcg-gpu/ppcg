@@ -1,0 +1,7 @@
+# What the dependences of this file have to come out as.
+#
+# S_3 writes c.f and S_2 reads c.u: one memory under two types, so the
+# read of the next iteration must not be moved over the write of this
+# one.  Given a space each -- which is right for a struct and wrong for a
+# union -- the two look independent and only the S_2 self-edge is left.
+dep_false *: .*S_3\[[a-z_0-9]+\] -> S_2\[[a-z_0-9]+'\]

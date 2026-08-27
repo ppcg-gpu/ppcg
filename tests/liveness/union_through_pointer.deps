@@ -1,0 +1,12 @@
+# What the dependences of this file have to come out as.
+#
+# The read of b->i before the write of b->f, through a union reached by a
+# POINTER rather than as an object.  Members given a space each look
+# independent and this comes back empty.
+#
+# NOT AN EXPECTATION ON THE TRANSLATION, though the defect this file
+# records was a deleted store: measured today, with the members split
+# apart the store is still emitted and it is the ORDER that goes -- both
+# reads of b->i end up after it, where the first one belongs before.  A
+# cell claiming the store is present would be green either way.
+dep_false *: \{ S_1\[\] -> S_2\[\] \}
