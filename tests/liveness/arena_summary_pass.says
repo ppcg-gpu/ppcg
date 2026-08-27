@@ -1,0 +1,9 @@
+# What ppcg has to report about this translation -- and what it must not.
+#
+# `rep` is never subscripted, so the caller's scop is right to say so
+# once.  Saying it TWICE means the summary pass invented the annotation's
+# arrays in a scop that mentions none of them.  The second claim is
+# negated and spans the two reports, which a CMake regular expression
+# does across newlines.
+arena names never spelled in the source:.*rep
+!never spelled in the source.*never spelled in the source
